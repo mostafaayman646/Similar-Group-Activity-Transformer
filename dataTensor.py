@@ -86,15 +86,15 @@ class FIFAWC22:
                 # 1. Home Players -> Fixed indices 0 to 10 | Role = 0
                 for i, p in enumerate(frame['homePlayers'][:11]):
                     frame_tensor[i, 0] = self.home_jersey_to_id.get(str(p.get('jerseyNum')), -1)
-                    frame_tensor[i, 1] = p['x']
-                    frame_tensor[i, 2] = p['y']
+                    frame_tensor[i, 1] = p['x'] / 52.5  # Normalize x to [0, 1]
+                    frame_tensor[i, 2] = p['y'] / 34.0
                     # Role is already 0.0
                 
                 # 2. Away Players -> Fixed indices 11 to 21 | Role = 1
                 for i, p in enumerate(frame['awayPlayers'][:11]):
                     frame_tensor[11 + i, 0] = self.away_jersey_to_id.get(str(p.get('jerseyNum')), -1)
-                    frame_tensor[11 + i, 1] = p['x']
-                    frame_tensor[11 + i, 2] = p['y']
+                    frame_tensor[11 + i, 1] = p['x'] / 52.5
+                    frame_tensor[11 + i, 2] = p['y'] / 34.0
                     frame_tensor[11 + i, 3] = 1.0  # Set Role to 1
                 
                 # 3. Ball -> Fixed index 22 | Role = 2
@@ -102,8 +102,8 @@ class FIFAWC22:
                 if balls:
                     b = balls[0]
                     # ID is already 0.0 
-                    frame_tensor[22, 1] = b['x']
-                    frame_tensor[22, 2] = b['y']
+                    frame_tensor[22, 1] = b['x'] / 52.5
+                    frame_tensor[22, 2] = b['y'] / 34.0
                     frame_tensor[22, 3] = 2.0  # Set Role to 2
                 
                 seq_frames.append(frame_tensor)
@@ -116,17 +116,36 @@ class FIFAWC22:
                     'sequence': seq_id,
                     'tracking_data': sequence_tensor
                 })
-    
+
     def save_sequences(self):
-        save_dir = f'DataBase/{self.game_id}'
-        if os.path.exists(save_dir):
+        save_dir = 'DataBase'  
+        os.makedirs(save_dir, exist_ok=True)
+
+        file_path = os.path.join(save_dir, f"{self.game_id}.pt")
+        if os.path.exists(file_path):
             print(f"Data for game {self.game_id} already saved. Skipping...")
             return
-        os.makedirs(save_dir, exist_ok=True)
-        for item in self.extracted_sequences:
-            seq_id = int(item['sequence'])
-            tensor_data = item['tracking_data']
-            file_path = os.path.join(save_dir, f"seq_{seq_id}.pt")
-            torch.save(tensor_data, file_path)
 
-data = FIFAWC22('FIFA World Cup 2022','10512',save_tensor=True)
+        # self.extracted_sequences is a list of dicts.
+        # PyTorch can save standard Python lists perfectly!
+        torch.save(self.extracted_sequences, file_path)
+        print(f"Saved {len(self.extracted_sequences)} sequences to {file_path}")
+
+if '__main__' == __name__:
+
+    game_ids = [
+        '10511', '3812', '3813', '3814', '3815', '3816', '3817', '3818',
+        '3819', '3820', '3821', '3822', '3823', '3824', '3825', '3826',
+        '3827', '3828', '3829', '3830', '3831', '10502', '10503', '10504',
+        '10505', '10507', '10509', '10512', '10513', '10514', '10515',
+        '10516', '3834', '3835', '3836', '3837', '3838', '3839', '3840',
+        '3841', '3842', '3843', '3844', '3845', '3846', '3847', '3857',
+        '3858', '3859', '3848', '3849', '3850', '3852', '3832', '3853',
+        '3854', '3855', '3856', '3851', '3833', '10508', '10506', '10517',
+        '10510'
+    ]
+
+    for gid in game_ids:
+        print(f"Processing Game {gid}...")
+        # This will load, process, and save the .pt file for the game
+        data = FIFAWC22('FIFA World Cup 2022', gid, save_tensor=True)
