@@ -55,11 +55,13 @@ def augment_play(coords, p_flip_y=0.5, p_mask_player=0.15):
 
 # --- 3. Main Training Loop ---
 def main():
+    Num_workers = 3
+    
     print("Loading Dataset")
     dataset = FIFASequenceDataset(data_dir=DATA_DIR, target_frames=100)
 
     # drop_last=True ensures every batch is exactly 8 plays (required for pure contrastive math)
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True, num_workers=Num_workers)
 
     print("Initializing Model")
     model = TemporalBaselineEncoder(embed_dim=128).to(device)

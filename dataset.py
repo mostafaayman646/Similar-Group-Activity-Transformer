@@ -5,7 +5,7 @@ import gc
 
 
 class FIFASequenceDataset(Dataset):
-    def __init__(self, data_dir, target_frames=100):
+    def __init__(self, data_dir, target_frames=230):
         self.target_frames = target_frames
 
 
@@ -60,7 +60,7 @@ class FIFASequenceDataset(Dataset):
             fixed_roles[-current_frames:, :] = actual_roles
 
         return {
-            'coordinates': fixed_coords,
-            'roles': fixed_roles,
-            'sequence_id': seq_id
+            'coordinates': fixed_coords,#[230,23,2]
+            'roles': fixed_roles,#[230,23,1]
+            'sequence_id': seq_id #[230,23,1]
         }

@@ -30,7 +30,7 @@ class TemporalBaselineEncoder(nn.Module):
         self.embed_dim = embed_dim
 
         # The Continuous Spatial Tokenizer (MLP)
-        self.movement_mlp = nn.Sequential(
+        self.movement_mlp = nn.Sequential( #Coordinates
             nn.Linear(2, embed_dim),
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim),
@@ -61,7 +61,7 @@ class TemporalBaselineEncoder(nn.Module):
         """
         Input Shapes:
         coordinates: [Batch, Frames, Agents, 2] -> e.g., [8, 100, 23, 2]
-        roles:       [Batch, Frames, Agents]    -> e.g., [8, 100, 23]
+        roles:       [Batch, Frames, Agents]    -> e.g., [8, 100, 23, 1]
         """
         B, S, A, _ = coordinates.shape
 
