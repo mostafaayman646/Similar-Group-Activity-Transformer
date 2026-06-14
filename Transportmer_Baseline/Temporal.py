@@ -1,6 +1,6 @@
-from Transformer.SAB import SAB
-from Transformer.PE import PositionalEncoding
-from Transformer.Embedding import TrajectoryEmbedding
+from SAB import SAB
+from PE import PositionalEncoding
+from Embedding import TrajectoryEmbedding
 import torch.nn as nn
 
 class TemporalEncoder(nn.Module):
