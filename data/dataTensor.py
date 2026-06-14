@@ -118,7 +118,7 @@ class FIFAWC22:
                 })
 
     def save_sequences(self):
-        save_dir = 'DataBase'  
+        save_dir = '../DataBase'
         os.makedirs(save_dir, exist_ok=True)
 
         file_path = os.path.join(save_dir, f"{self.game_id}.pt")
@@ -148,4 +148,4 @@ if '__main__' == __name__:
     for gid in game_ids:
         print(f"Processing Game {gid}...")
         # This will load, process, and save the .pt file for the game
-        data = FIFAWC22('FIFA World Cup 2022', gid, save_tensor=True)
+        data = FIFAWC22('../FIFA World Cup 2022', gid, save_tensor=True)

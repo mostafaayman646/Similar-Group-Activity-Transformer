@@ -2,10 +2,9 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import time
-import os
 
 # Import your custom modules
-from dataset import FIFASequenceDataset
+from data.dataset import FIFASequenceDataset
 from model import TemporalBaselineEncoder
 
 # Hyperparameters & Setup

@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import math
 
-
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=500):
         super().__init__()
@@ -76,14 +75,14 @@ class HierarchicalPlayEncoder(nn.Module):
         frame_out = self.frame_encoder(frame_input)  # (B*F, 24, 128)
 
         # Extract the CLS token (Index 0) and un-flatten back to original shape
-        frame_embeddings = frame_out[:, 0, :].view(B, F, self.d_model)  # (B, 100, 128)
+        frame_embeddings = frame_out[:, 0, :].view(B, F, self.d_model)  # (B, F, 128)
 
         # Play Encoder (Temporal)
-        temporal_seq = self.pos_encoder(frame_embeddings)  # (B, 100, 128)
+        temporal_seq = self.pos_encoder(frame_embeddings)  # (B, F, 128)
 
         # Expand Play CLS token
         play_cls_tokens = self.play_cls.expand(B, -1, -1)  # (B, 1, 128)
-        temporal_input = torch.cat([play_cls_tokens, temporal_seq], dim=1)  # (B, 101, 128)
+        temporal_input = torch.cat([play_cls_tokens, temporal_seq], dim=1)  # (B, F+1, 128)
 
         # Pass through Temporal Transformer
         play_out = self.play_encoder(temporal_input)  # (B, 101, 128)
