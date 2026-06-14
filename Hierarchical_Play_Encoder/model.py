@@ -34,13 +34,24 @@ class HierarchicalPlayEncoder(nn.Module):
 
         # Frame Encoder (Social/Spatial) - No Positional Encoding
         self.frame_cls = nn.Parameter(torch.randn(1, 1, d_model))
-        frame_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, batch_first=True)
+        frame_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            batch_first=True,
+            norm_first=True
+        )
+        self.frame_encoder = nn.TransformerEncoder(frame_layer, num_layers=1)
         self.frame_encoder = nn.TransformerEncoder(frame_layer, num_layers=frame_layers)
 
         # Play Encoder (Temporal)
         self.pos_encoder = PositionalEncoding(d_model)
         self.play_cls = nn.Parameter(torch.randn(1, 1, d_model))
-        play_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, batch_first=True)
+        play_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=n_heads,
+            batch_first=True,
+            norm_first=True
+        )
         self.play_encoder = nn.TransformerEncoder(play_layer, num_layers=play_layers)
 
     def forward(self, coordinates, roles):

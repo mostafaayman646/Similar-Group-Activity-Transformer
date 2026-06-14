@@ -10,9 +10,9 @@ from Hierarchical_Play_Encoder.model import HierarchicalPlayEncoder
 
 # Hyperparameters & Setup
 BATCH_SIZE = 8
-EPOCHS = 5
-LEARNING_RATE = 5e-4
-WEIGHT_DECAY = 1e-5
+EPOCHS = 10
+LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 0.01
 TEMPERATURE = 0.1
 DATA_DIR = '/kaggle/input/datasets/mostafa646/fifa-world-cup'
 
@@ -105,6 +105,7 @@ def main():
 
             # Step E: Backpropagate and Optimize
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             total_loss += loss.item()
