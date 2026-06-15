@@ -46,7 +46,8 @@ def main():
         data_dir=config['data']['data_dir'],
         target_frames=config['data']['target_frames']
     )
-    dataloader = DataLoader(dataset, batch_size=config['training']['batch_size'], shuffle=True, drop_last=True)
+    dataloader = DataLoader(dataset, batch_size=config['training']['batch_size'], shuffle=True, drop_last=True, 
+                            num_workers= config['training']['num_workers'])
 
     # Model & Optimizer
     logger.info("Initializing Hierarchical Model")
