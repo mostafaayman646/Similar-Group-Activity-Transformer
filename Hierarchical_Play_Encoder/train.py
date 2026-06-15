@@ -1,9 +1,9 @@
 import torch
-import torch.nn.functional as F
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
-import time
+from pytorch_metric_learning import losses
 
-# Import your custom modules
+
 from data import FIFASequenceDataset
 from Hierarchical_Play_Encoder.model import HierarchicalPlayEncoder
 from utils import setup_logger, save_checkpoint, load_config
@@ -63,8 +63,16 @@ def main():
         weight_decay=float(config['training']['weight_decay'])
     )
 
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=config['training']['epochs'] * len(dataloader),  # Total number of steps
+        eta_min=1e-6
+    )
+
     logger.info("\nStarting Training\n")
     best_loss = float('inf')
+
+    contrastive_loss_func = losses.NTXentLoss(temperature=config['training']['temperature'])
 
     for epoch in range(config['training']['epochs']):
         model.train()
@@ -82,20 +90,18 @@ def main():
 
             # Model Forward Pass
             try:
-                embeds_1 = model(coords_view_1, roles)
-                embeds_2 = model(coords_view_2, roles)
+                _, proj_1 = model(coords_view_1, roles)
+                _, proj_2 = model(coords_view_2, roles)
             except Exception as e:
                 logger.error(f"Forward pass failed at batch {batch_idx}: {str(e)}")
                 break
 
-            # L2 Normalization
-            embeds_1 = F.normalize(embeds_1, p=2, dim=1)
-            embeds_2 = F.normalize(embeds_2, p=2, dim=1)
+            embeddings = torch.cat([proj_1, proj_2], dim=0)
 
-            # InfoNCE Loss
-            logits = torch.matmul(embeds_1, embeds_2.T) / config['training']['temperature']
-            labels = torch.arange(config['training']['batch_size']).to(device)
-            loss = F.cross_entropy(logits, labels)
+            # Create labels: so the loss knows which pairs match
+            labels = torch.arange(config['training']['batch_size']).repeat(2).to(device)
+
+            loss = contrastive_loss_func(embeddings, labels)
 
             # Backward and Optimize
             loss.backward()
@@ -103,6 +109,7 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['training']['clip_max_norm'])
 
             optimizer.step()
+            scheduler.step()
             total_loss += loss.item()
 
         avg_loss = total_loss / len(dataloader)
@@ -114,7 +121,7 @@ def main():
 
         # Log epoch results
         logger.info(
-            f"Epoch [{epoch + 1}/{config['training']['epochs']}] | Contrastive Loss: {avg_loss:.4f} | Best: {best_loss:.4f}")
+            f"Epoch [{epoch + 1}/{config['training']['epochs']}] | Loss: {avg_loss:.4f} | Best: {best_loss:.4f}")
 
         # Save checkpoint
         checkpoint = {

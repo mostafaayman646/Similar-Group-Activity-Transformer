@@ -39,7 +39,6 @@ class HierarchicalPlayEncoder(nn.Module):
             batch_first=True,
             norm_first=True
         )
-        self.frame_encoder = nn.TransformerEncoder(frame_layer, num_layers=1)
         self.frame_encoder = nn.TransformerEncoder(frame_layer, num_layers=frame_layers)
 
         # Play Encoder (Temporal)
@@ -53,6 +52,12 @@ class HierarchicalPlayEncoder(nn.Module):
         )
         self.play_encoder = nn.TransformerEncoder(play_layer, num_layers=play_layers)
 
+        self.projection_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, 64)
+        )
+
     def forward(self, coordinates, roles):
         # coordinates: (Batch, Frames=100, Players=23, 2)
         B, F, P, _ = coordinates.shape
@@ -60,7 +65,7 @@ class HierarchicalPlayEncoder(nn.Module):
         # Tokenize Features
         loc_embeds = self.player_proj(coordinates)
         role_embeds = self.role_embedding(roles)
-        player_tokens = self.fusion(torch.cat([loc_embeds, role_embeds], dim=-1))  # (B, F, P, D)
+        player_tokens = self.fusion(torch.cat([loc_embeds, role_embeds], dim=-1))  # (B, F, P, d_model)
 
         # Frame Encoder
         flat_frames = player_tokens.view(B * F, P, self.d_model)  # (B*F, 23, 128)
@@ -85,9 +90,11 @@ class HierarchicalPlayEncoder(nn.Module):
         temporal_input = torch.cat([play_cls_tokens, temporal_seq], dim=1)  # (B, F+1, 128)
 
         # Pass through Temporal Transformer
-        play_out = self.play_encoder(temporal_input)  # (B, 101, 128)
+        play_out = self.play_encoder(temporal_input)  # (B, F+1, 128)
 
         # Extract final Play Embedding from the CLS token
         final_embedding = play_out[:, 0, :]  # (B, 128)
 
-        return final_embedding
+        projected_embedding = self.projection_head(final_embedding)
+
+        return final_embedding, projected_embedding
