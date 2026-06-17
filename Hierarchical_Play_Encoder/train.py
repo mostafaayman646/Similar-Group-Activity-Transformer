@@ -9,25 +9,40 @@ from Hierarchical_Play_Encoder.model import HierarchicalPlayEncoder
 from utils import setup_logger, save_checkpoint, load_config
 
 
-def augment_play(coords, p_flip_y=0.5, p_mask_player=0.15):
-    """ Creates a 'Positive Match' by mirroring and adding noise. """
-    aug_coords = coords.clone()
-    B, S, A, _ = aug_coords.shape
+# def augment_play(coords, p_flip_y=0.5, p_mask_player=0.15):
+#     """ Creates a 'Positive Match' by mirroring and adding noise. """
+#     aug_coords = coords.clone()
+#     B, S, A, _ = aug_coords.shape
+#
+#     # Tactical Mirroring
+#     flip_mask = torch.rand(B) < p_flip_y
+#     aug_coords[flip_mask, :, :, 1] = aug_coords[flip_mask, :, :, 1] * -1.0
+#
+#     # Spatial Jitter
+#     noise = torch.randn_like(aug_coords) * 0.02
+#     aug_coords = aug_coords + noise
+#
+#     # Agent Dropout (protect index 22 = the ball)
+#     player_mask = torch.rand(B, 1, A, 1) > p_mask_player
+#     player_mask[:, :, 22, :] = True
+#
+#     aug_coords = aug_coords * player_mask.to(aug_coords.device)
+#     return torch.clamp(aug_coords, min=-1.0, max=1.0)
 
-    # Tactical Mirroring
-    flip_mask = torch.rand(B) < p_flip_y
-    aug_coords[flip_mask, :, :, 1] = aug_coords[flip_mask, :, :, 1] * -1.0
+def augment_play_temporal(coords, crop_size=100):
+    """
+    Physics-informed augmentation:
+    Takes a 110-frame sequence and returns two overlapping 100-frame views.
+    """
+    # coords shape: [Batch, 110, 23, 2]
 
-    # Spatial Jitter
-    noise = torch.randn_like(aug_coords) * 0.02
-    aug_coords = aug_coords + noise
+    # View 1 (Anchor): Frames 0 to 100
+    view_1 = coords[:, :crop_size, :, :]
 
-    # Agent Dropout (protect index 22 = the ball)
-    player_mask = torch.rand(B, 1, A, 1) > p_mask_player
-    player_mask[:, :, 22, :] = True
+    # View 2 (Positive): Frames 10 to 110
+    view_2 = coords[:, -crop_size:, :, :]
 
-    aug_coords = aug_coords * player_mask.to(aug_coords.device)
-    return torch.clamp(aug_coords, min=-1.0, max=1.0)
+    return view_1, view_2
 
 def main():
     # Load configuration
@@ -86,8 +101,9 @@ def main():
             optimizer.zero_grad()
 
             # Augmentation
-            coords_view_1 = coords
-            coords_view_2 = augment_play(coords)
+            # coords_view_1 = coords
+            # coords_view_2 = augment_play(coords)
+            coords_view_1, coords_view_2 = augment_play_temporal(coords)
 
             # Model Forward Pass
             try:

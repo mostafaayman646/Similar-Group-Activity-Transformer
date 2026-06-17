@@ -1,6 +1,6 @@
 data:
   data_dir: "/kaggle/input/datasets/mostafa646/fifa-world-cup"
-  target_frames: 230
+  target_frames: 110
 
 model:
   embed_dim: 256
