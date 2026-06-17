@@ -5,19 +5,22 @@ import gc
 
 
 class FIFASequenceDataset(Dataset):
-    def __init__(self, data_dir, target_frames=230):
+    def __init__(self, data_dir,match_files, target_frames=230):
         self.target_frames = target_frames
-
-
         self.all_tensors = []
         self.all_seq_ids = []
 
         print("Loading matches into memory.")
         # Find all match files in the DataBase folder
-        file_paths = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.pt')]
+        file_paths = [os.path.join(data_dir, f) for f in match_files]
 
         # Load each match and append its sequences to our master list
         for path in file_paths:
+
+            if not os.path.exists(path):
+                print(f"Warning: {path} not found. Skipping.")
+                continue
+
             match_sequences = torch.load(path,weights_only=False)  # Loads the list of dicts
 
 

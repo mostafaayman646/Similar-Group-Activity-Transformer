@@ -6,7 +6,7 @@ from pytorch_metric_learning import losses
 
 from data import FIFASequenceDataset
 from Hierarchical_Play_Encoder.model import HierarchicalPlayEncoder
-from utils import setup_logger, save_checkpoint, load_config
+from utils import setup_logger, save_checkpoint, load_config,print_model_summary
 
 
 # def augment_play(coords, p_flip_y=0.5, p_mask_player=0.15):
@@ -57,12 +57,21 @@ def main():
 
     # Dataset & DataLoader
     logger.info("Loading Dataset")
-    dataset = FIFASequenceDataset(
+    train_dataset = FIFASequenceDataset(
         data_dir=config['data']['data_dir'],
+        match_files=config['data']['train_matches'],  # Pass training split
         target_frames=config['data']['target_frames']
     )
-    dataloader = DataLoader(dataset, batch_size=config['training']['batch_size'], shuffle=True, drop_last=True, 
-                            num_workers= config['training']['num_workers'])
+    train_loader = DataLoader(train_dataset, batch_size=config['training']['batch_size'], shuffle=True, drop_last=True,
+                              num_workers=config['training']['num_workers'])
+
+    val_dataset = FIFASequenceDataset(
+        data_dir=config['data']['data_dir'],
+        match_files=config['data']['val_matches'],  # Pass validation split
+        target_frames=config['data']['target_frames']
+    )
+    val_loader = DataLoader(val_dataset, batch_size=config['training']['batch_size'], shuffle=False, drop_last=True,
+                            num_workers=config['training']['num_workers'])
 
     # Model & Optimizer
     logger.info("Initializing Hierarchical Model")
@@ -72,6 +81,7 @@ def main():
         frame_layers=config['model']['frame_layers'],
         play_layers=config['model']['play_layers']
     ).to(device)
+    print_model_summary(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -81,12 +91,12 @@ def main():
 
     scheduler = CosineAnnealingLR(
         optimizer,
-        T_max=config['training']['epochs'] * len(dataloader),  # Total number of steps
+        T_max=config['training']['epochs'] * len(train_loader),  # Total number of steps
         eta_min=1e-6
     )
 
     logger.info("\nStarting Training\n")
-    best_loss = float('inf')
+    best_val_loss = float('inf')
 
     contrastive_loss_func = losses.NTXentLoss(temperature=config['training']['temperature'])
 
@@ -94,7 +104,7 @@ def main():
         model.train()
         total_loss = 0.0
 
-        for batch_idx, batch in enumerate(dataloader):
+        for batch_idx, batch in enumerate(train_loader):
             coords = batch['coordinates'].to(device)
             roles = batch['roles'].to(device)
 
@@ -104,11 +114,12 @@ def main():
             # coords_view_1 = coords
             # coords_view_2 = augment_play(coords)
             coords_view_1, coords_view_2 = augment_play_temporal(coords)
+            roles_view = roles[:, :100, :]
 
             # Model Forward Pass
             try:
-                _, proj_1 = model(coords_view_1, roles)
-                _, proj_2 = model(coords_view_2, roles)
+                _, proj_1 = model(coords_view_1, roles_view)
+                _, proj_2 = model(coords_view_2, roles_view)
             except Exception as e:
                 logger.error(f"Forward pass failed at batch {batch_idx}: {str(e)}")
                 break
@@ -122,31 +133,62 @@ def main():
 
             # Backward and Optimize
             loss.backward()
-
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['training']['clip_max_norm'])
-
             optimizer.step()
             scheduler.step()
+
             total_loss += loss.item()
 
-        avg_loss = total_loss / len(dataloader)
+        avg_train_loss = total_loss / len(train_loader)
+
+        # EVALUATION PHASE
+        model.eval()  # Freeze model layers (like BatchNorm/Dropout)
+        total_val_loss = 0.0
+
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(val_loader):
+                coords = batch['coordinates'].to(device)
+                roles = batch['roles'].to(device)
+
+                coords_view_1, coords_view_2 = augment_play_temporal(coords)
+                roles_view = roles[:, :100, :]
+
+                try:
+                    _, proj_1 = model(coords_view_1, roles_view)
+                    _, proj_2 = model(coords_view_2, roles_view)
+                except Exception as e:
+                    logger.error(f"Val pass failed at batch {batch_idx}: {str(e)}")
+                    break
+
+                embeddings = torch.cat([proj_1, proj_2], dim=0)
+                labels = torch.arange(config['training']['batch_size']).repeat(2).to(device)
+
+                loss = contrastive_loss_func(embeddings, labels)
+                total_val_loss += loss.item()
+
+        avg_val_loss = total_val_loss / len(val_loader)
 
         # Check if this is our best epoch so far
-        is_best = avg_loss < best_loss
+        is_best = avg_val_loss < best_val_loss
         if is_best:
-            best_loss = avg_loss
+            best_val_loss = avg_val_loss
 
         # Log epoch results
         logger.info(
-            f"Epoch [{epoch + 1}/{config['training']['epochs']}] | Loss: {avg_loss:.4f} | Best: {best_loss:.4f}")
+            f"Epoch [{epoch + 1}/{config['training']['epochs']}] | "
+            f"Train Loss: {avg_train_loss:.4f} | "
+            f"Val Loss: {avg_val_loss:.4f} | "
+            f"Best Val: {best_val_loss:.4f}"
+        )
 
         # Save checkpoint
         checkpoint = {
             'epoch': epoch + 1,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'loss': avg_loss,
-            'best_loss': best_loss,
+            'train_loss': avg_train_loss,
+            'val_loss': avg_val_loss,
+            'best_val_loss': best_val_loss,
             'config': config
         }
         save_checkpoint(checkpoint, is_best, config['logging']['checkpoint_dir'])
