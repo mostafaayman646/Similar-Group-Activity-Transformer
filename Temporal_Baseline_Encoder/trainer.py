@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 import time
 
 # Import your custom modules
-from data.dataset import FIFASequenceDataset
+from data.dataLoader import FIFASequenceDataset
 from model import TemporalBaselineEncoder
 
 # Hyperparameters & Setup
