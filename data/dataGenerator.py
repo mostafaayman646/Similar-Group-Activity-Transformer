@@ -1,5 +1,7 @@
 import bz2
 import json
+import math
+
 import pandas as pd
 import numpy as np
 import torch
@@ -18,6 +20,7 @@ class FIFAWC22:
         self.load_tracking_data()
         self.sample_sequence_frames()
         self.extract_per_frame_info()
+        self.validate_extraction(sample_seq=10)
     
     def load_event_data(self):
         with open(f'{self.folder_path}/Event Data/{self.game_id}.json', 'rt') as f:
@@ -84,11 +87,24 @@ class FIFAWC22:
                 game_events = row.get('gameEvents', {})
                 is_home_possession = game_events.get('homeTeam') if isinstance(game_events, dict) else None
 
+                # Extract Attacking Direction
+                stadium_meta = row.get('stadiumMetadata', {})
+                atk_dir = 'R'  # Default to Right
+                pitch_length = 105.0  # Safe FIFA default
+                pitch_width = 68.0
+                if isinstance(stadium_meta, dict):
+                    atk_dir = stadium_meta.get('teamAttackingDirection', 'R')
+                    pitch_length = stadium_meta.get('pitchLength', 105.0)
+                    pitch_width = stadium_meta.get('pitchWidth', 68.0)
+
                 raw_anchors.append({
                     'sequence_id': seq_id,
                     'event_time': row.get('eventTime'),
                     'single_label': single_label,
                     'is_home_possession': is_home_possession,
+                    'attacking_direction': atk_dir,
+                    'pitch_length': pitch_length,
+                    'pitch_width': pitch_width,
                     'seq_start': seq_boundaries[seq_id]['start'],
                     'seq_end': seq_boundaries[seq_id]['end']
                 })
@@ -118,7 +134,10 @@ class FIFAWC22:
                 'start_time': start_t,
                 'end_time': end_t,
                 'supcon_label': compound_label,
-                'is_home_possession': events[0]['is_home_possession']
+                'is_home_possession': events[0]['is_home_possession'],
+                'attacking_direction':events[0]['attacking_direction'],
+                'pitch_length':events[0]['pitch_length'],
+                'pitch_width':events[0]['pitch_width'],
             })
 
         # Overwrite DataFrame with new focused intervals. 
@@ -272,20 +291,52 @@ class FIFAWC22:
                 seq_metadata = self.important_sequence_times.loc[seq_id]
                 supcon_label = seq_metadata['supcon_label']
                 is_home_possession = seq_metadata['is_home_possession']
+                atk_dir = seq_metadata.get('attacking_direction', 'R')
+                p_length = seq_metadata.get('pitch_length', 105.0)
+                p_width = seq_metadata.get('pitch_width', 68.0)
             else:
-                supcon_label = None
-                is_home_possession = None
-            
-            # --- BALL EXTRACTION (Role = 2, Player_ID = 0) ---
-            balls = row.get('ballsSmoothed')
-            if not isinstance(balls, list) or len(balls) == 0:
-                balls = row.get('balls', [])
-                
-            ball_x, ball_y = np.nan, np.nan
-            if isinstance(balls, list) and len(balls) > 0:
-                ball_x = balls[0].get('x', np.nan)
-                ball_y = balls[0].get('y', np.nan)
-                
+                supcon_label, is_home_possession, atk_dir = None, None, 'R'
+                p_length, p_width = 105.0, 68.0
+
+            # --- DIRECTION NORMALIZATION (ATTACKING RIGHT) ---
+            # If the team is attacking Left ('L'), direction_mult = -1.0 to flip the pitch.
+            direction_mult = -1.0 if atk_dir == 'L' else 1.0
+            x_scale = p_length / 2.0
+            y_scale = p_width / 2.0
+
+            smooth_ball = row.get('ballsSmoothed', {})
+            raw_ball_list = row.get('balls', [])
+
+            ball_x, ball_y, ball_z = np.nan, np.nan, 0.0
+            ball_vis, ball_speed = 0.0, 0.0
+
+            # Handle the dictionary correctly
+            if isinstance(smooth_ball, dict) and 'x' in smooth_ball:
+                bx_val = smooth_ball.get('x')
+                by_val = smooth_ball.get('y')
+                bz_val = smooth_ball.get('z')
+
+                # Safely apply Math ONLY if the JSON didn't return null
+                if bx_val is not None and by_val is not None:
+                    # 1. Orient the pitch
+                    raw_x = bx_val * direction_mult
+                    raw_y = by_val * direction_mult
+
+                    # 2. Normalize to [-1.0, 1.0]
+                    ball_x = raw_x / x_scale
+                    ball_y = raw_y / y_scale
+
+                ball_z = bz_val if bz_val is not None else 0.0 # Todo Normalize Z
+
+
+                # Safely pull from raw list if available
+                if isinstance(raw_ball_list, list) and len(raw_ball_list) > 0:
+                    ball_vis = 1.0 if raw_ball_list[0].get('visibility') == 'VISIBLE' else 0.0
+                    ball_speed = raw_ball_list[0].get('speed')
+                    ball_speed = ball_speed if ball_speed is not None else 0.0 # Todo ball has no speed
+
+            dist_to_goal = math.hypot(1.0 - ball_x, 0.0 - ball_y) if pd.notna(ball_x) else np.nan
+
             extracted_data.append({
                 'seq_id': seq_id,
                 'videoTimeMs': video_time,
@@ -293,31 +344,52 @@ class FIFAWC22:
                 'player_id': 0,   # Ball ID is 0
                 'x': ball_x,
                 'y': ball_y,
-                'rel_x': 0.0,
-                'rel_y': 0.0,
+                'z': ball_z,
+                'speed': ball_speed,
+                'visibility': ball_vis,
+                'is_attacking': 0.0,
+                'dist_to_goal': dist_to_goal,
+                # 'rel_x': 0.0,
+                # 'rel_y': 0.0,
                 'supcon_label': supcon_label,           # NEW: Appending SupCon Label
-                'is_home_possession': is_home_possession # NEW: Appending Possession Flag
             })
             
             # --- PLAYER EXTRACTION HELPER ---
-            def process_players(players_list, role_int, jersey_map):
-                if not isinstance(players_list, list):
+            def process_players(smooth_list, raw_list, role_int, jersey_map, is_attacking_team):
+                if not isinstance(smooth_list, list):
                     return
-                    
-                for p in players_list:
-                    p_x = p.get('x', np.nan)
-                    p_y = p.get('y', np.nan)
-                    
-                    # Safely extract jerseyNum and map to playerId
-                    j_num = str(p.get('jerseyNum')) if p.get('jerseyNum') is not None else None
+
+                raw_dict = {str(p.get('jerseyNum')): p for p in raw_list} if isinstance(raw_list, list) else {}
+                for p in smooth_list:
+
+                    j_num = str(p.get('jerseyNum'))
+                    raw_p = raw_dict.get(j_num, {})  # Get the corresponding raw data
+
+                    px_val = p.get('x')
+                    py_val = p.get('y')
+
+                    p_x, p_y = np.nan, np.nan
+
+                    if px_val is not None and py_val is not None:
+                        p_x = (px_val * direction_mult) / x_scale
+                        p_y = (py_val * direction_mult) / y_scale
+
+                    raw_speed = raw_p.get('speed')
+                    speed = raw_speed if raw_speed is not None else 0.0
+
+                    visibility = 1.0 if raw_p.get('visibility') == 'VISIBLE' else 0.0
+                    is_attacking = 1.0 if is_attacking_team else 0.0
+                    dist = math.hypot(1.0 - p_x, 0.0 - p_y) if pd.notna(p_x) else np.nan
+
+
                     p_id = jersey_map.get(j_num, None)
                     
                     # Calculate relative coordinates
-                    if pd.notna(ball_x) and pd.notna(p_x):
-                        rel_x = p_x - ball_x
-                        rel_y = p_y - ball_y
-                    else:
-                        rel_x, rel_y = np.nan, np.nan
+                    # if pd.notna(ball_x) and pd.notna(p_x):
+                    #     rel_x = p_x - ball_x
+                    #     rel_y = p_y - ball_y
+                    # else:
+                    #     rel_x, rel_y = np.nan, np.nan
                         
                     extracted_data.append({
                         'seq_id': seq_id,
@@ -326,30 +398,86 @@ class FIFAWC22:
                         'player_id': p_id,
                         'x': p_x,
                         'y': p_y,
-                        'rel_x': rel_x,
-                        'rel_y': rel_y,
+                        'z': 0.0,  # NEW: Pad players with Z=0
+                        'speed': speed,  # NEW
+                        'visibility': visibility,  # NEW
+                        'is_attacking': is_attacking,  # NEW
+                        'dist_to_goal': dist,  # NEW
+                        # 'rel_x': rel_x,
+                        # 'rel_y': rel_y,
                         'supcon_label': supcon_label,           # NEW: Appending SupCon Label
-                        'is_home_possession': is_home_possession # NEW: Appending Possession Flag
+
                     })
-                    
+
             # Extract Home Players (Role = 0)
-            home_players = row.get('homePlayersSmoothed')
-            if not isinstance(home_players, list) or len(home_players) == 0:
-                home_players = row.get('homePlayers', [])
-            process_players(home_players, 0, self.home_jersey_map)
-            
+            s_home = row.get('homePlayersSmoothed', [])
+            r_home = row.get('homePlayers', [])
+            is_home_atk = (is_home_possession == True)
+            process_players(s_home, r_home, 0, self.home_jersey_map, is_home_atk)
+
             # Extract Away Players (Role = 1)
-            away_players = row.get('awayPlayersSmoothed')
-            if not isinstance(away_players, list) or len(away_players) == 0:
-                away_players = row.get('awayPlayers', [])
-            process_players(away_players, 1, self.away_jersey_map)
-            
+            s_away = row.get('awayPlayersSmoothed', [])
+            r_away = row.get('awayPlayers', [])
+            is_away_atk = (is_home_possession == False)
+            process_players(s_away, r_away, 1, self.away_jersey_map, is_away_atk)
+
         # Compile Final DataFrame
         self.final_extracted_df = pd.DataFrame(extracted_data)
         print(f"Extraction complete. Created tabular mapping with {len(self.final_extracted_df)} records.")
         print(f"Sequence 10 now has: {len(self.final_extracted_df[self.final_extracted_df['seq_id'] == 10])} frames")
         print(f"Shape: {self.final_extracted_df.shape}")
 
+    def validate_extraction(self, sample_seq=10):
+        """
+        Validates the final extracted DataFrame to ensure metadata
+        and tracking data merged correctly.
+        """
+        df = self.final_extracted_df
+
+        print("\n--- Extraction Validation ---")
+        print(f"Total Extracted Records: {len(df)}")
+
+        # 1. Validate Columns
+        expected_cols = ['seq_id', 'videoTimeMs', 'role', 'player_id', 'x', 'y', 'rel_x', 'rel_y', 'supcon_label',
+                         'is_home_possession']
+        missing_cols = [col for col in expected_cols if col not in df.columns]
+
+        if missing_cols:
+            print(f"WARNING: Missing expected columns: {missing_cols}")
+        else:
+            print("Successfully verified all required columns are present.")
+
+            # 2. Check for missing metadata (ensures the Elastic Window join worked)
+            missing_labels = df['supcon_label'].isna().sum()
+            if missing_labels > 0:
+                print(f"WARNING: Found {missing_labels} records missing a 'supcon_label'.")
+            else:
+                print("All records successfully mapped to a SupCon label.")
+
+        # 3. Sequence Specific Validation
+        print(f"\n--- Sequence {sample_seq} Validation ---")
+        sample_records = df[df['seq_id'] == sample_seq]
+
+        if len(sample_records) > 0:
+            print(f"Total records (players + ball): {len(sample_records)}")
+
+            # Group by video time to see how many actual tracking frames exist
+            unique_frames = sample_records['videoTimeMs'].nunique()
+            print(f"Total unique tracking frames: {unique_frames}")
+
+            # Print the first row as a dictionary to visually verify the data types
+            print(f"\nSample Data Row:")
+            sample_dict = sample_records.iloc[1].to_dict()
+            for key, value in sample_dict.items():
+                print(f"  {key}: {value}")
+        else:
+            print(f"Sequence {sample_seq} not found in extracted data.")
+            print("(Note: This is normal if Sequence 10 did not contain a target Shot, Cross, or Foul).")
+        print("-----------------------------\n")
+
+
+    # Todo : Function for saving tensor in required format
+    # Todo : manual sequence label
 
 if __name__ == '__main__':
     game_ids = [
