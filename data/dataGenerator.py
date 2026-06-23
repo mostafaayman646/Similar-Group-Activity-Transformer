@@ -8,7 +8,7 @@ import torch
 import os
 
 class FIFAWC22:
-    def __init__(self, folder_path, game_id, sample_size=100, pre_buffer=10, post_buffer=3):
+    def __init__(self, folder_path, game_id, sample_size=100, pre_buffer=10, post_buffer=3,save_Tensor = False):
         self.folder_path = folder_path
         self.game_id = game_id
         self.sample_size = sample_size
@@ -20,6 +20,7 @@ class FIFAWC22:
         self.load_tracking_data()
         self.sample_sequence_frames()
         self.extract_per_frame_info()
+        self.post_process_ball_data()
         self.validate_extraction(sample_seq=10)
     
     def load_event_data(self):
@@ -426,7 +427,52 @@ class FIFAWC22:
         print(f"Extraction complete. Created tabular mapping with {len(self.final_extracted_df)} records.")
         print(f"Sequence 10 now has: {len(self.final_extracted_df[self.final_extracted_df['seq_id'] == 10])} frames")
         print(f"Shape: {self.final_extracted_df.shape}")
-
+    
+    def post_process_ball_data(self):
+        """
+        Normalizes ball Z values and calculates ball speed based on frame-to-frame distance.
+        To be called after extract_per_frame_info() is completed.
+        """
+        import numpy as np
+        import pandas as pd
+        
+        # Mask to isolate only the ball records (role == 2)
+        ball_mask = self.final_extracted_df['role'] == 2
+        
+        # Extract ball data and ensure strictly chronological order per sequence
+        ball_data = self.final_extracted_df[ball_mask].sort_values(by=['seq_id', 'videoTimeMs'])
+        
+        # --- 1. Calculate Ball Speed ---
+        # Calculate time difference in seconds
+        dt_sec = ball_data.groupby('seq_id')['videoTimeMs'].diff() / 1000.0
+        
+        # Calculate coordinate differences
+        dx = ball_data.groupby('seq_id')['x'].diff()
+        dy = ball_data.groupby('seq_id')['y'].diff()
+        dz = ball_data.groupby('seq_id')['z'].diff()
+        
+        # Euclidean distance
+        dist = np.sqrt(dx**2 + dy**2 + dz**2)
+        
+        # Calculate speed (distance / time). Handle division by zero and NaNs for the first frames
+        speed = (dist / dt_sec).replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        
+        # Update the original DataFrame using the aligned indices
+        self.final_extracted_df.loc[ball_data.index, 'speed'] = speed
+        
+        # --- 2. Normalize Ball Z Values (Standard Scaler) ---
+        ball_z = self.final_extracted_df.loc[ball_mask, 'z']
+        z_mean = ball_z.mean()
+        z_std = ball_z.std()
+        
+        # Apply standard scaling (z = (x - mean) / std), protecting against division by zero
+        if pd.notna(z_std) and z_std > 0:
+            self.final_extracted_df.loc[ball_mask, 'z'] = (ball_z - z_mean) / z_std
+        else:
+            self.final_extracted_df.loc[ball_mask, 'z'] = 0.0
+            
+        print("Post-processing complete: Ball Z-values standard-scaled and speeds calculated.")
+    
     def validate_extraction(self, sample_seq=10):
         """
         Validates the final extracted DataFrame to ensure metadata
@@ -467,15 +513,14 @@ class FIFAWC22:
 
             # Print the first row as a dictionary to visually verify the data types
             print(f"\nSample Data Row:")
-            sample_dict = sample_records.iloc[1].to_dict()
+            sample_dict = sample_records.iloc[92].to_dict()
             for key, value in sample_dict.items():
                 print(f"  {key}: {value}")
         else:
             print(f"Sequence {sample_seq} not found in extracted data.")
             print("(Note: This is normal if Sequence 10 did not contain a target Shot, Cross, or Foul).")
         print("-----------------------------\n")
-
-
+    
     # Todo : Function for saving tensor in required format
     # Todo : manual sequence label
 
