@@ -1,20 +1,33 @@
 import bz2
 import json
 import math
-
 import pandas as pd
 import numpy as np
 import torch
 import os
 
 class FIFAWC22:
-    def __init__(self, folder_path, game_id, sample_size=100, pre_buffer=10, post_buffer=3,save_Tensor = False):
+    """
+        End-to-End Data Engineering Pipeline for PFF Football Tracking Data.
+
+        This class ingests raw PFF Event and Tracking JSONs, extracts tactical
+        sequences (Shots, Crosses, Fouls), normalizes pitch coordinates, and
+        compiles the physics into standard [100, 23, 7] PyTorch tensors
+        ready for Supervised Contrastive Learning (SupCon).
+        """
+
+    # PHASE 1: INITIALIZATION & I/O
+
+    def __init__(self, folder_path, game_id, sample_size=100, pre_buffer=10, post_buffer=3):
         self.folder_path = folder_path
         self.game_id = game_id
+
+        # Hyperparameters for tensor shaping
         self.sample_size = sample_size
         self.pre_buffer = pre_buffer
         self.post_buffer = post_buffer
-        
+
+        # Execute the pipeline sequentially
         self.load_event_data()
         self.get_important_sequences()
         self.load_tracking_data()
@@ -22,29 +35,32 @@ class FIFAWC22:
         self.extract_per_frame_info()
         self.post_process_ball_data()
         self.validate_extraction(sample_seq=10)
+        self.save_to_tensor()
     
     def load_event_data(self):
+        """Loads the raw Event JSON and calculates absolute sequence boundaries."""
         with open(f'{self.folder_path}/Event Data/{self.game_id}.json', 'rt') as f:
             events_data = json.load(f)
         self.events_df = pd.DataFrame(events_data)
         
-        # Group by sequence
+        # Group by sequence to find global start/end times
         self.sequences = self.events_df.groupby('sequence').agg(
             start_time=('startTime', 'min'),
             end_time=('endTime', 'max')
         )
-        print(f"Found: {len(self.sequences)} valid sequences")
-    
+        print(f"Phase 1: Found {len(self.sequences)} valid sequences in Event Data.")
+
+    # PHASE 2: EVENT DATA ENGINEERING (LABELS & WINDOWS)
     def get_important_sequences(self):
         """
-        Identifies tactical anchors, chains compound labels, and calculates 
-        precise elastic tracking windows clamped to sequence boundaries.
+        Identifies tactical anchors, chains compound labels (e.g., CR_I__SH_S),
+        and calculates precise elastic tracking windows clamped to sequence boundaries.
         """
         target_event_types = {'SH', 'CR', 'FO'} # Updated focus
         seq_boundaries = {}
         raw_anchors = []
 
-        # 1. Map global sequence boundaries to prevent bleeding
+        # Step 1: Map global sequence boundaries to prevent turnover corruption
         for _, row in self.events_df.iterrows():
             seq_id = row.get('sequence')
             e_time = row.get('eventTime')
@@ -55,7 +71,7 @@ class FIFAWC22:
                     seq_boundaries[seq_id]['start'] = min(seq_boundaries[seq_id]['start'], e_time)
                     seq_boundaries[seq_id]['end'] = max(seq_boundaries[seq_id]['end'], e_time)
 
-        # 2. Extract anchors and dynamically build labels
+        # Step 2: Extract anchors and dynamically build SupCon labels
         for _, row in self.events_df.iterrows():
             poss_event = row.get('possessionEvents')
             if not isinstance(poss_event, dict): 
@@ -65,6 +81,7 @@ class FIFAWC22:
             if event_type in target_event_types:
                 seq_id = row.get('sequence')
 
+                # Handle PFF JSON dictionary inconsistencies based on event type
                 sub_type, outcome = None, None
                 if event_type == 'SH':
                     sub_type = poss_event.get('shotType')
@@ -84,15 +101,12 @@ class FIFAWC22:
                 if outcome: label_parts.append(outcome)
                 single_label = "_".join(label_parts)
 
-                # Safely extract possession flag
+                # Extract pitch dimensions and attacking direction for later normalization
                 game_events = row.get('gameEvents', {})
                 is_home_possession = game_events.get('homeTeam') if isinstance(game_events, dict) else None
 
-                # Extract Attacking Direction
                 stadium_meta = row.get('stadiumMetadata', {})
-                atk_dir = 'R'  # Default to Right
-                pitch_length = 105.0  # Safe FIFA default
-                pitch_width = 68.0
+                atk_dir, pitch_length, pitch_width = 'R', 105.0, 68.0
                 if isinstance(stadium_meta, dict):
                     atk_dir = stadium_meta.get('teamAttackingDirection', 'R')
                     pitch_length = stadium_meta.get('pitchLength', 105.0)
@@ -110,7 +124,7 @@ class FIFAWC22:
                     'seq_end': seq_boundaries[seq_id]['end']
                 })
 
-        # 3. Chronological Chaining & Elastic Windows
+        # Step 3: Chronological Chaining & Elastic Windows
         sequences = {}
         for anchor in raw_anchors:
             seq_id = anchor['sequence_id']
@@ -122,11 +136,12 @@ class FIFAWC22:
         for seq_id, events in sequences.items():
             events.sort(key=lambda x: x['event_time'])
 
+            # Chain multiple events into one tactical string (e.g., CR_I_D __ SH_S_S)
             compound_label = " __ ".join([e['single_label'] for e in events])
+
+            # Stretch window and clamp strictly to sequence boundaries
             first_time = events[0]['event_time']
             last_time = events[-1]['event_time']
-
-            # Stretch window and clamp to boundaries
             start_t = max(first_time - self.pre_buffer, events[0]['seq_start'])
             end_t = min(last_time + self.post_buffer, events[0]['seq_end'])
 
@@ -141,17 +156,18 @@ class FIFAWC22:
                 'pitch_width':events[0]['pitch_width'],
             })
 
-        # Overwrite DataFrame with new focused intervals. 
-        # load_tracking_data() will automatically use these new start/end times.
         self.important_sequence_times = pd.DataFrame(important_seqs_data).set_index('sequence_id')
-        print(f"Important sequences (Elastic Windows): {len(self.important_sequence_times)}")
-    
+        print(f"Phase 2: Built {len(self.important_sequence_times)} Elastic Windows with Compound Labels.")
+
+    # PHASE 3: TRACKING DATA ENGINEERING (EXTRACTION & SAMPLING)
     def load_tracking_data(self):
-        print("Loading and filtering tracking data...")
+        """Streams the heavy .bz2 tracking file, extracting only frames inside our tactical windows."""
+
+        print("Loading and filtering tracking data")
         self.tracking_frames = []
         file_path = f'{self.folder_path}/Tracking Data/{self.game_id}.jsonl.bz2'
         
-        # Pre-extract to a native Python list for much faster lookup inside the loop
+        # Pre-extract intervals to a native Python list for O(1) loop lookups
         intervals = [
             (row.Index, row.start_time * 1000, row.end_time * 1000)
             for row in self.important_sequence_times.itertuples()
@@ -177,38 +193,38 @@ class FIFAWC22:
         # Sort tracking frames by video time to maintain chronological order
         self.tracking_frames = sorted(self.tracking_frames, key=lambda x: x['videoTimeMs'])
         self.tracking_df = pd.DataFrame(self.tracking_frames)
-        print(f"Loaded {len(self.tracking_df)} total tracking frames.")
-        print(len(self.tracking_df[self.tracking_df['seq_id'] == 10]))
-    
+        print(f"  -> Extracted {len(self.tracking_df)} total tactical frames.")
+
     def sample_sequence_frames(self):
         """
         Calculates the target number of frames per unique event based on self.sample_size.
-        Reallocates unused frame quotas from short events to longer events to ensure 
+        Reallocates unused frame quotas from short events to longer events to ensure
         the final sequence hits the target sample_size.
         """
-        print("Downsampling tracking frames per sequence event...")
+
+        print("Phase 3b: Balancing frame counts per sequence")
         sampled_frames_list = []
-        
+
         for seq_id, seq_df in self.tracking_df.groupby('seq_id'):
             seq_df = seq_df.copy()
-            
+
             # 1. Fill NaNs so we don't lose the continuous tracking data
             seq_df['game_event_id'] = seq_df['game_event_id'].ffill().bfill()
-            
+
             unique_events = seq_df['game_event_id'].unique()
             num_events = len(unique_events)
-            
+
             if num_events == 0:
                 continue
-            
+
             # Initial target per event
             base_target = self.sample_size // num_events
             remainder = self.sample_size % num_events
-            
+
             targets = {}
             for i, ev_id in enumerate(unique_events):
                 targets[ev_id] = base_target + (1 if i < remainder else 0)
-            
+
             # 2. First pass: Check for "short" events and calculate the deficit
             deficit = 0
             for ev_id in unique_events:
@@ -217,19 +233,19 @@ class FIFAWC22:
                     # We have fewer frames than the target. Calculate how many we are short.
                     deficit += (targets[ev_id] - actual_frames)
                     targets[ev_id] = actual_frames # Cap the target to what's available
-            
+
             # 3. Reallocate the deficit to events that have extra frames
             if deficit > 0:
                 for ev_id in unique_events:
                     actual_frames = len(seq_df[seq_df['game_event_id'] == ev_id])
                     extra_capacity = actual_frames - targets[ev_id]
-                    
+
                     if extra_capacity > 0:
                         # Give this event as much of the deficit as it can handle
                         added_frames = min(extra_capacity, deficit)
                         targets[ev_id] += added_frames
                         deficit -= added_frames
-                        
+
                     if deficit == 0:
                         break # All missing frames reallocated!
 
@@ -238,13 +254,13 @@ class FIFAWC22:
                 event_frames = seq_df[seq_df['game_event_id'] == ev_id]
                 t_frames = targets[ev_id]
                 a_frames = len(event_frames)
-                
+
                 if a_frames > t_frames:
                     indices = np.linspace(0, a_frames - 1, t_frames, dtype=int)
                     sampled_frames_list.append(event_frames.iloc[indices])
                 else:
                     sampled_frames_list.append(event_frames)
-                    
+
         # Reconstruct the DataFrame and sort chronologically
         if sampled_frames_list:
             self.sampled_tracking_df = pd.concat(sampled_frames_list).sort_values(by=['seq_id', 'videoTimeMs']).reset_index(drop=True)
@@ -253,7 +269,8 @@ class FIFAWC22:
         else:
             self.sampled_tracking_df = pd.DataFrame()
             print("Warning: No frames were left after downsampling.")
-    
+
+
     def _build_jersey_mappings(self):
         """
         Builds jerseyNum -> playerId mapping for all players (including subs)
@@ -273,12 +290,17 @@ class FIFAWC22:
             for p in players_list:
                 if 'jerseyNum' in p and 'playerId' in p:
                     self.away_jersey_map[str(p['jerseyNum'])] = p['playerId']
-    
+
+    # PHASE 4: FEATURE ENGINEERING (PHYSICS & NORMALIZATION)
     def extract_per_frame_info(self):
+        """
+        Unpacks the raw JSON tracking dicts into flat physical heuristics.
+        Applies mathematical normalization so the attacking team ALWAYS faces Right (X=1.0).
+        """
         # 1. Ensure mappings exist before extracting
         self._build_jersey_mappings()
         
-        print("Extracting per-frame player and ball info...")
+        print("Phase 4: Extracting enriched physics and applying spatial normalization...")
         extracted_data = []
         
         # 2. Iterate over the sampled tracking frames per sequence
@@ -286,8 +308,7 @@ class FIFAWC22:
             seq_id = row.get('seq_id')
             video_time = row.get('videoTimeMs')
             
-            # --- Fetch Metadata for this Sequence ---
-            # Safely retrieve the compound label and possession flag created in get_important_sequences
+            # Fetch Metadata for this Sequence
             if seq_id in self.important_sequence_times.index:
                 seq_metadata = self.important_sequence_times.loc[seq_id]
                 supcon_label = seq_metadata['supcon_label']
@@ -299,25 +320,24 @@ class FIFAWC22:
                 supcon_label, is_home_possession, atk_dir = None, None, 'R'
                 p_length, p_width = 105.0, 68.0
 
-            # --- DIRECTION NORMALIZATION (ATTACKING RIGHT) ---
+            # Pitch Normalization: Flip pitch 180 deg if attacking Left
             # If the team is attacking Left ('L'), direction_mult = -1.0 to flip the pitch.
             direction_mult = -1.0 if atk_dir == 'L' else 1.0
             x_scale = p_length / 2.0
             y_scale = p_width / 2.0
 
+            # --- Ball Extraction ---
             smooth_ball = row.get('ballsSmoothed', {})
             raw_ball_list = row.get('balls', [])
-
             ball_x, ball_y, ball_z = np.nan, np.nan, 0.0
             ball_vis, ball_speed = 0.0, 0.0
 
-            # Handle the dictionary correctly
             if isinstance(smooth_ball, dict) and 'x' in smooth_ball:
                 bx_val = smooth_ball.get('x')
                 by_val = smooth_ball.get('y')
                 bz_val = smooth_ball.get('z')
 
-                # Safely apply Math ONLY if the JSON didn't return null
+
                 if bx_val is not None and by_val is not None:
                     # 1. Orient the pitch
                     raw_x = bx_val * direction_mult
@@ -327,14 +347,12 @@ class FIFAWC22:
                     ball_x = raw_x / x_scale
                     ball_y = raw_y / y_scale
 
-                ball_z = bz_val if bz_val is not None else 0.0 # Todo Normalize Z
+                ball_z = bz_val if bz_val is not None else 0.0
 
-
-                # Safely pull from raw list if available
                 if isinstance(raw_ball_list, list) and len(raw_ball_list) > 0:
                     ball_vis = 1.0 if raw_ball_list[0].get('visibility') == 'VISIBLE' else 0.0
                     ball_speed = raw_ball_list[0].get('speed')
-                    ball_speed = ball_speed if ball_speed is not None else 0.0 # Todo ball has no speed
+                    ball_speed = ball_speed if ball_speed is not None else 0.0
 
             dist_to_goal = math.hypot(1.0 - ball_x, 0.0 - ball_y) if pd.notna(ball_x) else np.nan
 
@@ -350,9 +368,7 @@ class FIFAWC22:
                 'visibility': ball_vis,
                 'is_attacking': 0.0,
                 'dist_to_goal': dist_to_goal,
-                # 'rel_x': 0.0,
-                # 'rel_y': 0.0,
-                'supcon_label': supcon_label,           # NEW: Appending SupCon Label
+                'supcon_label': supcon_label,
             })
             
             # --- PLAYER EXTRACTION HELPER ---
@@ -382,15 +398,7 @@ class FIFAWC22:
                     is_attacking = 1.0 if is_attacking_team else 0.0
                     dist = math.hypot(1.0 - p_x, 0.0 - p_y) if pd.notna(p_x) else np.nan
 
-
                     p_id = jersey_map.get(j_num, None)
-                    
-                    # Calculate relative coordinates
-                    # if pd.notna(ball_x) and pd.notna(p_x):
-                    #     rel_x = p_x - ball_x
-                    #     rel_y = p_y - ball_y
-                    # else:
-                    #     rel_x, rel_y = np.nan, np.nan
                         
                     extracted_data.append({
                         'seq_id': seq_id,
@@ -399,14 +407,12 @@ class FIFAWC22:
                         'player_id': p_id,
                         'x': p_x,
                         'y': p_y,
-                        'z': 0.0,  # NEW: Pad players with Z=0
-                        'speed': speed,  # NEW
-                        'visibility': visibility,  # NEW
-                        'is_attacking': is_attacking,  # NEW
-                        'dist_to_goal': dist,  # NEW
-                        # 'rel_x': rel_x,
-                        # 'rel_y': rel_y,
-                        'supcon_label': supcon_label,           # NEW: Appending SupCon Label
+                        'z': 0.0,
+                        'speed': speed,
+                        'visibility': visibility,
+                        'is_attacking': is_attacking,
+                        'dist_to_goal': dist,
+                        'supcon_label': supcon_label,
 
                     })
 
@@ -425,7 +431,6 @@ class FIFAWC22:
         # Compile Final DataFrame
         self.final_extracted_df = pd.DataFrame(extracted_data)
         print(f"Extraction complete. Created tabular mapping with {len(self.final_extracted_df)} records.")
-        print(f"Sequence 10 now has: {len(self.final_extracted_df[self.final_extracted_df['seq_id'] == 10])} frames")
         print(f"Shape: {self.final_extracted_df.shape}")
     
     def post_process_ball_data(self):
@@ -472,7 +477,8 @@ class FIFAWC22:
             self.final_extracted_df.loc[ball_mask, 'z'] = 0.0
             
         print("Post-processing complete: Ball Z-values standard-scaled and speeds calculated.")
-    
+
+    # PHASE 5: OUTPUT & COMPILATION
     def validate_extraction(self, sample_seq=10):
         """
         Validates the final extracted DataFrame to ensure metadata
@@ -480,7 +486,7 @@ class FIFAWC22:
         """
         df = self.final_extracted_df
 
-        print("\n--- Extraction Validation ---")
+        print(f"\nPhase 5: Validation Check")
         print(f"Total Extracted Records: {len(df)}")
 
         # 1. Validate Columns
@@ -520,8 +526,90 @@ class FIFAWC22:
             print(f"Sequence {sample_seq} not found in extracted data.")
             print("(Note: This is normal if Sequence 10 did not contain a target Shot, Cross, or Foul).")
         print("-----------------------------\n")
-    
-    # Todo : Function for saving tensor in required format
+
+
+    def save_to_tensor(self):
+        """
+        Imputes missing physical data, shapes the sequence into a strict [100, 23, 7] tensor,
+        and saves it to disk as a compiled PyTorch binary.
+        """
+        print("Phase 5b: Compiling PyTorch Tensors")
+
+        # 1. IMPUTE MISSING DATA (The NaN Guardrail)
+        fill_cols = ['x', 'y', 'z', 'speed', 'dist_to_goal']
+        self.final_extracted_df[fill_cols] = self.final_extracted_df.groupby(
+            ['seq_id', 'role', 'player_id']
+        )[fill_cols].transform(lambda x: x.ffill().bfill())
+
+        # Safely fill any remaining NaNs (e.g., if a player was entirely missing for a whole sequence) with 0.0
+        self.final_extracted_df[fill_cols] = self.final_extracted_df[fill_cols].fillna(0.0)
+
+        # 2. PREPARE TENSOR DIMENSIONS
+        sequences = self.final_extracted_df['seq_id'].unique()
+        feature_cols = ['x', 'y', 'z', 'speed', 'visibility', 'is_attacking', 'dist_to_goal']
+        X_list, labels_list, seq_ids_list = [], [], []
+
+        for seq in sequences:
+            seq_df = self.final_extracted_df[self.final_extracted_df['seq_id'] == seq]
+
+            # Sort frames chronologically
+            frames = np.sort(seq_df['videoTimeMs'].unique())
+
+            # Ensure strict 100-frame enforcement from the downsampler
+            if len(frames) != self.sample_size:
+                print(f"  -> Skipping Seq {seq}: Expected {self.sample_size} frames, got {len(frames)}.")
+                continue
+
+            # Initialize empty tensor for this specific play: [100, 23, 7]
+            seq_tensor = np.zeros((self.sample_size, 23, len(feature_cols)), dtype=np.float32)
+
+            for t_idx, t in enumerate(frames):
+                frame_df = seq_df[seq_df['videoTimeMs'] == t]
+
+                # --- AGENT ORDERING ENFORCEMENT ---
+
+                # A. The Ball (Role 2) -> Always Index 0
+                ball = frame_df[frame_df['role'] == 2]
+                if not ball.empty:
+                    seq_tensor[t_idx, 0, :] = ball[feature_cols].values[0]
+
+                # B. Home Players (Role 0) -> Always Indices 1 through 11
+                home = frame_df[frame_df['role'] == 0].sort_values('player_id')
+                num_home = min(len(home), 11)  # Hard cap at 11 to prevent tensor shape errors
+                if num_home > 0:
+                    seq_tensor[t_idx, 1:1 + num_home, :] = home[feature_cols].values[:num_home]
+
+                # C. Away Players (Role 1) -> Always Indices 12 through 22
+                away = frame_df[frame_df['role'] == 1].sort_values('player_id')
+                num_away = min(len(away), 11)
+                if num_away > 0:
+                    seq_tensor[t_idx, 12:12 + num_away, :] = away[feature_cols].values[:num_away]
+
+            X_list.append(seq_tensor)
+            labels_list.append(seq_df['supcon_label'].iloc[0])
+            seq_ids_list.append(seq)
+
+        # 3. COMPILE AND SAVE
+        if len(X_list) == 0:
+            print("No valid sequences found to save.")
+            return
+
+        # Stack into final shape: [Num_Sequences, 100, 23, 7]
+        X_final = torch.tensor(np.array(X_list), dtype=torch.float32)
+
+        save_dict = {
+            'features': X_final,
+            'labels': labels_list,
+            'sequence_ids': seq_ids_list
+        }
+
+        save_dir = f'{self.folder_path}/Processed Tensors'
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = f'{save_dir}/{self.game_id}.pt'
+
+        torch.save(save_dict, save_path)
+        print(f"Successfully saved tensor {X_final.shape} to {save_path}")
+
     # Todo : manual sequence label
 
 if __name__ == '__main__':
@@ -539,4 +627,4 @@ if __name__ == '__main__':
     
     for gid in game_ids:
         print(f"Processing Game {gid}...")
-        FIFAWC22('FIFA World Cup 2022', gid)
+        FIFAWC22('/home/amr/Study/Research Project/Footbal_sim_Transformer/FIFA World Cup 2022', gid)
