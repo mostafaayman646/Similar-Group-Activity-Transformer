@@ -24,12 +24,10 @@ class HierarchicalPlayEncoder(nn.Module):
 
         # Continuous Spatial Tokenizer
         self.player_proj = nn.Sequential(
-            nn.Linear(2, d_model),
+            nn.Linear(9, d_model),
             nn.ReLU(),
             nn.Linear(d_model, d_model)
         )
-        self.role_embedding = nn.Embedding(3, d_model)
-        self.fusion = nn.Linear(d_model * 2, d_model)
 
         # Frame Encoder (Social/Spatial) - No Positional Encoding
         self.frame_cls = nn.Parameter(torch.randn(1, 1, d_model))
@@ -58,15 +56,13 @@ class HierarchicalPlayEncoder(nn.Module):
             nn.Linear(d_model, 64)
         )
 
-    def forward(self, coordinates, roles):
-        # coordinates: (Batch, Frames=100, Players=23, 2)
-        B, F, P, _ = coordinates.shape
+    def forward(self, features):
+        # coordinates: (Batch, Frames=100, Players=23, 9)
+        B, F, P, _ = features.shape
 
         # Tokenize Features
-        loc_embeds = self.player_proj(coordinates)
-        role_embeds = self.role_embedding(roles)
-        player_tokens = self.fusion(torch.cat([loc_embeds, role_embeds], dim=-1))  # (B, F, P, d_model)
-
+        player_tokens = self.player_proj(features)
+        
         # Frame Encoder
         flat_frames = player_tokens.view(B * F, P, self.d_model)  # (B*F, 23, 128)
 

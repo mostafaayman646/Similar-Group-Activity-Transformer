@@ -18,7 +18,7 @@ class FIFAWC22:
 
     # PHASE 1: INITIALIZATION & I/O
 
-    def __init__(self, folder_path, game_id, sample_size=100, pre_buffer=10, post_buffer=3):
+    def __init__(self, folder_path, game_id, sample_size=100, pre_buffer=10, post_buffer=3, save_Tensor = False):
         self.folder_path = folder_path
         self.game_id = game_id
 
@@ -35,7 +35,8 @@ class FIFAWC22:
         self.extract_per_frame_info()
         self.post_process_ball_data()
         self.validate_extraction(sample_seq=10)
-        self.save_to_tensor()
+        if save_Tensor:
+            self.save_to_tensor()
     
     def load_event_data(self):
         """Loads the raw Event JSON and calculates absolute sequence boundaries."""
@@ -519,7 +520,7 @@ class FIFAWC22:
 
             # Print the first row as a dictionary to visually verify the data types
             print(f"\nSample Data Row:")
-            sample_dict = sample_records.iloc[92].to_dict()
+            sample_dict = sample_records.iloc[1].to_dict()
             for key, value in sample_dict.items():
                 print(f"  {key}: {value}")
         else:
@@ -627,4 +628,4 @@ if __name__ == '__main__':
     
     for gid in game_ids:
         print(f"Processing Game {gid}...")
-        FIFAWC22('/home/amr/Study/Research Project/Footbal_sim_Transformer/FIFA World Cup 2022', gid)
+        FIFAWC22('FIFA World Cup 2022', gid,save_Tensor=False)

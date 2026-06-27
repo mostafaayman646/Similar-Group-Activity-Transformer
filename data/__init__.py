@@ -1,1 +1,1 @@
-from .dataLoader import FIFASequenceDataset
+from .dataset import FIFASequenceDataset
