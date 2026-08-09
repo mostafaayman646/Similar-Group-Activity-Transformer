@@ -1,0 +1,16 @@
+### Example user template template
+### Example user template
+
+# IntelliJ project files
+.idea
+*.iml
+out
+gen
+
+FIFA World Cup 2022
+DataBase
+__pycache__
+.vscode
+Dataset_Notebook
+
+runs
