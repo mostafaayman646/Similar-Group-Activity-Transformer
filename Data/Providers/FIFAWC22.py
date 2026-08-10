@@ -1,27 +1,71 @@
 import bz2
 import json
+import os
 
 from Data.Data_interface import Data_Pipeline
 
 
 class FIFAWC22(Data_Pipeline):
-    def __init__(self, data_dir_path: str):
-        self.load_data(data_dir_path)
+    def __init__(self, data_dir_path: str, json_id: str):
+        self.load_data(data_dir_path, json_id)
         self._filter_frames()
+        self.store_stadium_dimensions()
+        self.build_jersey_maps()
 
-    def load_data(self, data_dir_path: str):
+    def load_data(self, data_dir_path: str, json_id: str):
         """
-        data_dir_path: path to the game's tracking file,
-        e.g. ".../Tracking Data/10510.jsonl.bz2"
+        Loads tracking data, metadata, and roster data.
         """
+        tracking_path = os.path.join(data_dir_path,f'Tracking Data/{json_id}.jsonl.bz2')
+        meta_path = os.path.join(data_dir_path,f'Metadata/{json_id}.json')
+        roster_path = os.path.join(data_dir_path,f'Rosters/{json_id}.json')
+        
+        # 1. Load tracking data
         frames = []
-        with bz2.open(data_dir_path, 'rt') as f:
+        with bz2.open(tracking_path, 'rt') as f:
             for line in f:
                 if line.strip():
                     frames.append(json.loads(line))
 
         frames.sort(key=lambda frame: frame['videoTimeMs'])
         self.frames = {frame['frameNum']: frame for frame in frames}
+
+        # 2. Load metadata
+        self.meta = {}
+        with open(meta_path, 'rt') as f:
+            self.meta = json.load(f)[0]
+
+        # 3. Load roster data
+        self.roster = []
+        with open(roster_path, 'rt') as f:
+            self.roster = json.load(f)
+
+    def store_stadium_dimensions(self):
+        pitch = self.meta['stadium']['pitches'][0]
+        self.pitch_length = pitch['length']
+        self.pitch_width = pitch['width']
+
+    def build_jersey_maps(self):
+        home_team_id = self.meta['homeTeam']['id']
+        away_team_id = self.meta['awayTeam']['id']
+
+        self.home_jersey_to_id = {}
+        self.away_jersey_to_id = {}
+
+        for entry in self.roster:
+            team_id = entry['team']['id']
+            shirt_num = entry['shirtNumber']
+            player_id = entry['player']['id']
+
+            if team_id == home_team_id:
+                self.home_jersey_to_id[shirt_num] = player_id
+            elif team_id == away_team_id:
+                self.away_jersey_to_id[shirt_num] = player_id
+
+    def _normalize_coordinates(self, x: float, y: float) -> tuple:
+        norm_x = (2 * x) / self.pitch_length
+        norm_y = (2 * y) / self.pitch_width
+        return norm_x, norm_y
 
     def _filter_frames(self):
         """
@@ -60,11 +104,29 @@ class FIFAWC22(Data_Pipeline):
 
         self.frames = valid_frames
 
+    def _format_players(self, players: list, jersey_to_id: dict) -> list:
+        formatted = []
+        for p in players or []:
+            shirt_num = str(p['jerseyNum'])
+            x, y = self._normalize_coordinates(p['x'], p['y'])
+            formatted.append({
+                'id': jersey_to_id[shirt_num],
+                'x': x,
+                'y': y
+            })
+        return formatted
+
     def get_players_position(self) -> dict:
         return {
             frame_num: {
-                'home': frame.get('homePlayersSmoothed'),
-                'away': frame.get('awayPlayersSmoothed'),
+                'home': self._format_players(
+                    frame.get('homePlayersSmoothed'),
+                    self.home_jersey_to_id
+                ),
+                'away': self._format_players(
+                    frame.get('awayPlayersSmoothed'),
+                    self.away_jersey_to_id
+                )
             }
             for frame_num, frame in self.frames.items()
         }

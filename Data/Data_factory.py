@@ -2,7 +2,7 @@ from Data.Dataset_enum import Dataset
 from Data.Providers import FIFAWC22
 
 
-def build_sequences(dataset: Dataset, data_dir_path: str) -> dict:
+def build_sequences(dataset: Dataset, data_dir_path: str, json_id: str) -> dict:
     """
     Returns:
         {
@@ -22,7 +22,7 @@ def build_sequences(dataset: Dataset, data_dir_path: str) -> dict:
 
     """
     if dataset == Dataset.FIFA_WC_2022:
-        pipeline = FIFAWC22(data_dir_path)
+        pipeline = FIFAWC22(data_dir_path,json_id)
     else:
         raise NotImplementedError(f"No adapter registered for dataset: {dataset}")
 

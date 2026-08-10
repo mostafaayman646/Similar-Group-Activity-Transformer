@@ -4,7 +4,18 @@ from abc import ABC, abstractmethod
 class Data_Pipeline(ABC):
     @abstractmethod
     def get_players_position(self) -> dict:
-        """frameNum -> {"home": [...], "away": [...]} raw player position entries."""
+        """
+            Returns player positions indexed by frame number with mapped player IDs.
+            Returns:
+                dict: Mapping of frame_num to team position dicts:
+                    {
+                        frame_num: {
+                            "home": [{"id": int, "x": float, "y": float}, ...],
+                            "away": [{"id": int, "x": float, "y": float}, ...]
+                        }
+                    }
+        Note: x,y normalized from -1 to 1
+        """
         pass
 
     @abstractmethod

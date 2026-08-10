@@ -6,7 +6,8 @@ from Data import Dataset
 
 fifa_wc_22_dict = build_sequences(
     dataset=Dataset.FIFA_WC_2022,
-    data_dir_path='FIFA World Cup 2022/Tracking Data/10510.jsonl.bz2'
+    data_dir_path='FIFA World Cup 2022',
+    json_id='10510'
 )
 
 first_match_id = next(iter(fifa_wc_22_dict))
@@ -15,11 +16,11 @@ first_match = fifa_wc_22_dict[first_match_id]
 first_seq_id = next(iter(first_match))
 first_sequence = first_match[first_seq_id]
 
-first_5_frames = dict(itertools.islice(first_sequence.items(), 5))
+first_frame = dict(itertools.islice(first_sequence.items(), 1))
 
 print(f"match_id: {first_match_id}")
 print(f"sequence_id: {first_seq_id}")
-print(first_5_frames)
+print(first_frame)
 
 
 total_frames = 0
