@@ -1,42 +1,23 @@
 import torch
 from pathlib import Path
-import itertools
 from Data import build_sequences
 from Data import Dataset
 
-fifa_wc_22_dict = build_sequences(
-    dataset=Dataset.FIFA_WC_2022,
-    data_dir_path='FIFA World Cup 2022',
-    json_id='10510'
-)
+all_matches = {}
+data_dir = 'FIFA World Cup 2022'
+counter = 0
+for path in Path(f'{data_dir}/Tracking Data').glob('*.jsonl.bz2'):
+    if counter == 5:
+        break
+    json_id = path.name.split('.')[0]  # Extracts the ID from filename (e.g., '10510.jsonl.bz2' -> '10510')
+    match_data = build_sequences(
+        dataset=Dataset.FIFA_WC_2022,
+        data_dir_path=data_dir,
+        json_id=json_id
+    )
+    all_matches.update(match_data)
+    
+    counter+=1
+    print(f"Finished:{counter}")
 
-first_match_id = next(iter(fifa_wc_22_dict))
-first_match = fifa_wc_22_dict[first_match_id]
-
-first_seq_id = next(iter(first_match))
-first_sequence = first_match[first_seq_id]
-
-first_frame = dict(itertools.islice(first_sequence.items(), 1))
-
-print(f"match_id: {first_match_id}")
-print(f"sequence_id: {first_seq_id}")
-print(first_frame)
-
-
-total_frames = 0
-print("\ntotal_num_frames per sequence:")
-for seq_id, seq_frames in first_match.items():
-    total_frames += seq_frames['total_num_frames']
-    print(f"  sequence {seq_id}: {seq_frames['total_num_frames']}")
-
-
-print(f"\nTotal Frames:{total_frames}")
-# all_matches = {}
-# for path in Path('FIFA World Cup 2022/Tracking Data').glob('*.jsonl.bz2'):
-#     all_matches.update(build_sequences(Dataset.FIFA_WC_2022, str(path)))
-
-# torch.save(all_matches, 'all_matches.pt')
-
-
-# Frames:170717
-# Frames:100124
+torch.save(all_matches, f'{data_dir}/all_matches.pt')
