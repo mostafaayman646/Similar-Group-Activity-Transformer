@@ -201,10 +201,10 @@ class FIFAWC22(Data_Pipeline):
 
     def get_match_id(self):
         first_frame = next(iter(self.frames.values()))
-        return first_frame.get('gameRefId')
+        return int(first_frame.get('gameRefId'))
 
     def get_sequence_id(self) -> dict:
         return {
-            frame_num: frame.get('sequence_id')
+            frame_num: int(frame.get('sequence_id'))
             for frame_num, frame in self.frames.items()
         }

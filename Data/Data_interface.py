@@ -58,10 +58,19 @@ class Data_Pipeline(ABC):
 
     @abstractmethod
     def get_sequence_id(self) -> dict:
-        """frameNum -> sequence_id, the uninterrupted possession this frame belongs to."""
+        """
+        Returns:
+            dict:
+                {
+                    frame_num: seq_id -> int
+                }.
+        """
         pass
 
     @abstractmethod
     def get_match_id(self):
-        """Unique identifier for the match this pipeline was loaded from."""
+        """
+        Returns:
+            game_id -> int
+        """
         pass
