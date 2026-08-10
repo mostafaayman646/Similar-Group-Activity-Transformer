@@ -3,10 +3,14 @@ import json
 import os
 
 from Data.Data_interface import Data_Pipeline
+from Data.Dataset_enum import GameEventType, PossessionEventType
 
 
 class FIFAWC22(Data_Pipeline):
+    _GAME_EVENT_MAP = {member.name: member for member in GameEventType}
+    _POSSESSION_EVENT_MAP = {member.name: member for member in PossessionEventType}
     def __init__(self, data_dir_path: str, json_id: str):
+        self._last_home_ball = None
         self.load_data(data_dir_path, json_id)
         self._filter_frames()
         self.store_stadium_dimensions()
@@ -68,6 +72,18 @@ class FIFAWC22(Data_Pipeline):
         norm_y = (2 * y) / self.pitch_width
         return norm_x, norm_y
 
+    def _map_game_event(self, raw_code) -> GameEventType:
+        try:
+            return self._GAME_EVENT_MAP[raw_code]
+        except KeyError:
+            raise ValueError(f"Unmapped game_event_type code: {raw_code!r}")
+
+    def _map_possession_event(self, raw_code) -> PossessionEventType:
+        try:
+            return self._POSSESSION_EVENT_MAP[raw_code]
+        except KeyError:
+            raise ValueError(f"Unmapped possession_event_type code: {raw_code!r}")
+
     def _filter_frames(self):
         """
         Calculates sequence IDs and drops the frame if:
@@ -75,6 +91,10 @@ class FIFAWC22(Data_Pipeline):
         - no player - home or away - was tracked with HIGH confidence
         - no ball object is present
         - video is missing
+
+        Also tracks the max ball height (z) across all valid frames in this
+        same pass, so get_ball_position() no longer needs its own full scan
+        to find it.
         """
         # 1. Calculate sequence IDs for all frames
         sequence_ids = {}
@@ -87,6 +107,7 @@ class FIFAWC22(Data_Pipeline):
 
         # 2. Filter frames based on sequence presence, tracking confidence, ball presence, and if video missing
         valid_frames = {}
+        max_ball_z = None
         for frame_num, frame in self.frames.items():
             seq_id = sequence_ids[frame_num]
             
@@ -119,7 +140,12 @@ class FIFAWC22(Data_Pipeline):
                 frame['sequence_id'] = seq_id
                 valid_frames[frame_num] = frame
 
+                z = ball.get('z')
+                if max_ball_z is None or z > max_ball_z:
+                    max_ball_z = z
+
         self.frames = valid_frames
+        self.max_ball_z = max_ball_z if max_ball_z is not None else 1.0
 
     def _format_players(self, players: list, jersey_to_id: dict) -> list:
         formatted = []
@@ -133,84 +159,58 @@ class FIFAWC22(Data_Pipeline):
             })
         return formatted
 
-    def get_players_position(self) -> dict:
+    def get_players_position(self, frame: dict) -> dict:
         return {
-            frame_num: {
-                'home': self._format_players(
-                    frame.get('homePlayersSmoothed'),
-                    self.home_jersey_to_id
-                ),
-                'away': self._format_players(
-                    frame.get('awayPlayersSmoothed'),
-                    self.away_jersey_to_id
-                )
-            }
-            for frame_num, frame in self.frames.items()
+            'home': self._format_players(frame.get('homePlayersSmoothed'), self.home_jersey_to_id),
+            'away': self._format_players(frame.get('awayPlayersSmoothed'), self.away_jersey_to_id),
         }
 
-    def get_ball_position(self) -> dict:
-        # 1. Calculate max z across all valid frames
-        max_z = max((frame['ballsSmoothed'].get('z') for frame in self.frames.values()), default=1.0)
+    def get_ball_position(self, frame: dict) -> dict:
+        ball = frame['ballsSmoothed']
+        norm_x, norm_y = self._normalize_coordinates(ball.get('x'), ball.get('y'))
+        z_val = ball.get('z')
+        norm_z = abs(z_val / self.max_ball_z)
 
-        ball_positions = {}
-        for frame_num, frame in self.frames.items():
-            ball = frame['ballsSmoothed']
-            norm_x, norm_y = self._normalize_coordinates(ball.get('x'), ball.get('y'))
-            z_val = ball.get('z')
-            norm_z = abs(z_val / max_z)
-            
-            ball_positions[frame_num] = {
-                'x': norm_x,
-                'y': norm_y,
-                'z': norm_z
-            }
-                
-        return ball_positions
-
-    def get_event_type(self) -> dict:
-        events = {}
-        last_home_ball = None
-        for frame_num, frame in self.frames.items():
-            # 1. Possession event type
-            possession_event = frame.get('possession_event')
-            if possession_event and possession_event.get('possession_event_type') is not None:
-                possession_event_type = possession_event['possession_event_type']
-            else:#Dribbling
-                possession_event_type = 'DR'
-            
-            # 2. Game event type and home_ball
-            game_event = frame.get('game_event')
-            if game_event is None:
-                # Ball moving between feet of same player -> not on the ball
-                game_event_type = 'NOTB'
-                home_ball = last_home_ball
-            else:
-                game_event_type = game_event.get('game_event_type')
-                home_ball = game_event.get('home_ball')
-                last_home_ball = home_ball
-            
-            events[frame_num] = {
-                'game_event_type': game_event_type,
-                'home_ball': home_ball,
-                'possession_event_type': possession_event_type,
-            }
-        return events
-
-    def get_time(self) -> dict:
         return {
-            frame_num: {
-                'Time': (frame.get('videoTimeMs')-self.initial_MS)/1000.0,
-                'Period': frame.get('period'),
-            }
-            for frame_num, frame in self.frames.items()
+            'x': norm_x,
+            'y': norm_y,
+            'z': norm_z
         }
+
+    def get_event_type(self, frame: dict) -> dict:
+        # 1. Possession event type
+        possession_event = frame.get('possession_event')
+        if possession_event and possession_event.get('possession_event_type') is not None:
+            possession_event_type = self._map_possession_event(possession_event['possession_event_type'])
+        else:  # Dribbling
+            possession_event_type = PossessionEventType.DR
+
+        # 2. Game event type and home_ball
+        game_event = frame.get('game_event')
+        if game_event is None:
+            # Ball is moving with no feet touching it
+            game_event_type = GameEventType.NOTB
+            home_ball = self._last_home_ball
+        else:
+            game_event_type = self._map_game_event(game_event.get('game_event_type'))
+            home_ball = game_event.get('home_ball')
+            self._last_home_ball = home_ball
+
+        return {
+            'game_event_type': game_event_type.value,
+            'home_ball': home_ball,
+            'possession_event_type': possession_event_type.value,
+        }
+
+    def get_time(self, frame: dict) -> dict:
+        return {
+            'Time': (frame.get('videoTimeMs')-self.initial_MS)/1000.0,
+            'Period': frame.get('period'),
+        }
+
+    def get_sequence_id(self, frame: dict) -> int:
+        return int(frame['sequence_id'])
 
     def get_match_id(self):
         first_frame = next(iter(self.frames.values()))
         return int(first_frame.get('gameRefId'))
-
-    def get_sequence_id(self) -> dict:
-        return {
-            frame_num: int(frame.get('sequence_id'))
-            for frame_num, frame in self.frames.items()
-        }
