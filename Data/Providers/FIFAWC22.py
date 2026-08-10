@@ -161,13 +161,33 @@ class FIFAWC22(Data_Pipeline):
         return ball_positions
 
     def get_event_type(self) -> dict:
-        return {
-            frame_num: {
-                'game_event': frame.get('game_event'),
-                'possession_event': frame.get('possession_event'),
+        events = {}
+        last_possession_event_type = None
+        last_home_ball = None
+        for frame_num, frame in self.frames.items():
+            # 1. Possession event type - forward fill from last seen value
+            possession_event = frame.get('possession_event')
+            if possession_event and possession_event.get('possession_event_type') is not None:
+                last_possession_event_type = possession_event['possession_event_type']
+            possession_event_type = last_possession_event_type
+            
+            # 2. Game event type and home_ball
+            game_event = frame.get('game_event')
+            if game_event is None:
+                # Ball moving between feet of same player -> not on the ball
+                game_event_type = 'NOTB'
+                home_ball = last_home_ball
+            else:
+                game_event_type = game_event.get('game_event_type')
+                home_ball = game_event.get('home_ball')
+                last_home_ball = home_ball
+            
+            events[frame_num] = {
+                'game_event_type': game_event_type,
+                'home_ball': home_ball,
+                'possession_event_type': possession_event_type,
             }
-            for frame_num, frame in self.frames.items()
-        }
+        return events
 
     def get_time(self) -> dict:
         return {

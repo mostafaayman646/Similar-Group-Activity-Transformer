@@ -33,7 +33,14 @@ class Data_Pipeline(ABC):
 
     @abstractmethod
     def get_event_type(self) -> dict:
-        """frameNum -> {'game_event': ..., 'possession_event': ...}, raw event info for that frame."""
+        """
+            Returns events indexed by frame number.
+            Returns:
+                dict:
+                    {
+                        frame_num: {'game_event_type': str, 'home_ball': bool, 'possession_event_type': str}
+                    }
+        """
         pass
 
     @abstractmethod
