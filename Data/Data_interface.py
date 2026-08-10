@@ -20,7 +20,15 @@ class Data_Pipeline(ABC):
 
     @abstractmethod
     def get_ball_position(self) -> dict:
-        """frameNum -> raw ball position entry/entries for that frame."""
+        """
+            Returns ball position indexed by frame number.
+            Returns:
+                dict:
+                    {
+                        frame_num: {'x': float, 'y': float, 'z': float}
+                    }
+        Note: x,y normalized from -1 to 1 and z normalized from 0 to 1
+        """
         pass
 
     @abstractmethod

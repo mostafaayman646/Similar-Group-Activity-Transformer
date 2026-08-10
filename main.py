@@ -39,4 +39,4 @@ print(f"\nTotal Frames:{total_frames}")
 
 
 # Frames:170717
-# Frames:111429
+# Frames:100124

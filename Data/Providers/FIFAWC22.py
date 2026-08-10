@@ -72,6 +72,7 @@ class FIFAWC22(Data_Pipeline):
         Calculates sequence IDs and drops the frame if:
         - it has no seq_id (nothing happening in it yet), or
         - no player - home or away - was tracked with HIGH confidence
+        - no ball object is present
         """
         # 1. Calculate sequence IDs for all frames
         sequence_ids = {}
@@ -82,7 +83,7 @@ class FIFAWC22(Data_Pipeline):
                 current_sequence = game_event['sequence']
             sequence_ids[frame_num] = current_sequence
 
-        # 2. Filter frames based on sequence presence and tracking confidence
+        # 2. Filter frames based on sequence presence, tracking confidence, and ball presence
         valid_frames = {}
         for frame_num, frame in self.frames.items():
             seq_id = sequence_ids[frame_num]
@@ -95,6 +96,15 @@ class FIFAWC22(Data_Pipeline):
             all_players = home_players + away_players
 
             if not all_players:
+                continue
+
+            ball = frame.get('ballsSmoothed')
+            if not ball:
+                continue
+
+            # Skip frame if ball_data is invalid or missing any required coordinate/visibility field
+            required_ball_keys = ('x', 'y', 'z', 'visibility')
+            if any(ball.get(key) is None for key in required_ball_keys):
                 continue
 
             if any(player.get('confidence') == 'HIGH' for player in all_players):
@@ -132,10 +142,23 @@ class FIFAWC22(Data_Pipeline):
         }
 
     def get_ball_position(self) -> dict:
-        return {
-            frame_num: frame.get('balls')
-            for frame_num, frame in self.frames.items()
-        }
+        # 1. Calculate max z across all valid frames
+        max_z = max((frame['ballsSmoothed'].get('z') for frame in self.frames.values()), default=1.0)
+
+        ball_positions = {}
+        for frame_num, frame in self.frames.items():
+            ball = frame['ballsSmoothed']
+            norm_x, norm_y = self._normalize_coordinates(ball.get('x'), ball.get('y'))
+            z_val = ball.get('z')
+            norm_z = abs(z_val / max_z)
+            
+            ball_positions[frame_num] = {
+                'x': norm_x,
+                'y': norm_y,
+                'z': norm_z
+            }
+                
+        return ball_positions
 
     def get_event_type(self) -> dict:
         return {
