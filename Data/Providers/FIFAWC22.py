@@ -74,6 +74,7 @@ class FIFAWC22(Data_Pipeline):
         - it has no seq_id (nothing happening in it yet), or
         - no player - home or away - was tracked with HIGH confidence
         - no ball object is present
+        - video is missing
         """
         # 1. Calculate sequence IDs for all frames
         sequence_ids = {}
@@ -84,7 +85,7 @@ class FIFAWC22(Data_Pipeline):
                 current_sequence = game_event['sequence']
             sequence_ids[frame_num] = current_sequence
 
-        # 2. Filter frames based on sequence presence, tracking confidence, and ball presence
+        # 2. Filter frames based on sequence presence, tracking confidence, ball presence, and if video missing
         valid_frames = {}
         for frame_num, frame in self.frames.items():
             seq_id = sequence_ids[frame_num]
@@ -106,6 +107,11 @@ class FIFAWC22(Data_Pipeline):
             # Skip frame if ball_data is invalid or missing any required coordinate/visibility field
             required_ball_keys = ('x', 'y', 'z', 'visibility')
             if any(ball.get(key) is None for key in required_ball_keys):
+                continue
+
+            # Skip frame if video missing
+            game_event = frame.get('game_event') or {}
+            if game_event.get('game_event_type') == 'VID':
                 continue
 
             if any(player.get('confidence') == 'HIGH' for player in all_players):
@@ -163,14 +169,14 @@ class FIFAWC22(Data_Pipeline):
 
     def get_event_type(self) -> dict:
         events = {}
-        last_possession_event_type = None
         last_home_ball = None
         for frame_num, frame in self.frames.items():
-            # 1. Possession event type - forward fill from last seen value
+            # 1. Possession event type
             possession_event = frame.get('possession_event')
             if possession_event and possession_event.get('possession_event_type') is not None:
-                last_possession_event_type = possession_event['possession_event_type']
-            possession_event_type = last_possession_event_type
+                possession_event_type = possession_event['possession_event_type']
+            else:#Dribbling
+                possession_event_type = 'DR'
             
             # 2. Game event type and home_ball
             game_event = frame.get('game_event')
