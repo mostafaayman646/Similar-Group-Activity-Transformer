@@ -28,6 +28,7 @@ class FIFAWC22(Data_Pipeline):
                     frames.append(json.loads(line))
 
         frames.sort(key=lambda frame: frame['videoTimeMs'])
+        self.initial_MS = frames[0].get('videoTimeMs')
         self.frames = {frame['frameNum']: frame for frame in frames}
 
         # 2. Load metadata
@@ -192,10 +193,8 @@ class FIFAWC22(Data_Pipeline):
     def get_time(self) -> dict:
         return {
             frame_num: {
-                'videoTimeMs': frame.get('videoTimeMs'),
-                'period': frame.get('period'),
-                'periodElapsedTime': frame.get('periodElapsedTime'),
-                'periodGameClockTime': frame.get('periodGameClockTime'),
+                'Time': (frame.get('videoTimeMs')-self.initial_MS)/1000.0,
+                'Period': frame.get('period'),
             }
             for frame_num, frame in self.frames.items()
         }

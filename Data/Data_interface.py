@@ -45,7 +45,15 @@ class Data_Pipeline(ABC):
 
     @abstractmethod
     def get_time(self) -> dict:
-        """frameNum -> raw timing info for that frame (videoTimeMs, period, etc.)."""
+        """
+        Returns:
+            dict:
+                {
+                    frame_num: {'Time': float, 'Period': int}
+                }.
+        Time:current time from first kick off in seconds
+        Period: Current half (1,2) or extra time(3,4)
+        """
         pass
 
     @abstractmethod
