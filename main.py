@@ -14,8 +14,8 @@ from Data import build_sequences
 from Data import Dataset
 
 DATA_DIR = 'FIFA World Cup 2022'
-MAX_MATCHES = 5      # set to None to process every match found
-NUM_WORKERS = None   # None -> auto (bounded by CPU count and number of matches)
+MAX_MATCHES = None      # set to None to process every match found
+NUM_WORKERS = 3   # None -> auto (bounded by CPU count and number of matches)
 COMPRESS_LEVEL = 1   # 1 = fastest / bigger file, 9 = slowest / smallest file
 
 _HEADER = struct.Struct('<Q')  # 8-byte length prefix per stored match

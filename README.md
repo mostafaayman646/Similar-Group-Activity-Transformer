@@ -164,3 +164,15 @@ single vocabulary regardless of the underlying dataset.
 | `DR` | Dribbling |
 
 See `Dataset_enum.py` for the exact enum definitions and integer values.
+
+## Visualizer Usage
+```bash
+# just save it, auto filename
+python visualize_match.py --pt_path "FIFA World Cup 2022/all_matches.pt" --match_id 12345 --k 3 --save
+
+# save to a specific file
+python visualize_match.py --match_id 12345 --k 3 --save highlights.gif
+
+# save AND watch it live
+python visualize_match.py --match_id 12345 --k 3 --save --show
+```
