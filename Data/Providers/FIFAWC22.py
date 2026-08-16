@@ -104,7 +104,8 @@ class FIFAWC22(Data_Pipeline):
             if game_event and game_event.get('sequence') is not None:
                 current_sequence = game_event['sequence']
             sequence_ids[frame_num] = current_sequence
-
+        
+        num_frames_before = len(self.frames)
         # 2. Filter frames based on sequence presence, tracking confidence, ball presence, and if video missing
         valid_frames = {}
         max_ball_z = None
@@ -146,6 +147,9 @@ class FIFAWC22(Data_Pipeline):
 
         self.frames = valid_frames
         self.max_ball_z = max_ball_z if max_ball_z is not None else 1.0
+        
+        self.num_frames_removed = num_frames_before - len(valid_frames)
+        self.num_sequences = len({f['sequence_id'] for f in valid_frames.values()})
 
     def _format_players(self, players: list, jersey_to_id: dict) -> list:
         formatted = []
@@ -214,3 +218,11 @@ class FIFAWC22(Data_Pipeline):
     def get_match_id(self):
         first_frame = next(iter(self.frames.values()))
         return int(first_frame.get('gameRefId'))
+
+    def get_filter_stats(self, fps: float = 29.9) -> dict:
+        return {
+            'match_id': self.get_match_id(),
+            'num_sequences': self.num_sequences,
+            'frames_removed': self.num_frames_removed,
+            'minutes_removed': round(self.num_frames_removed / fps / 60, 2),
+        }

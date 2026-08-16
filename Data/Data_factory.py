@@ -26,6 +26,12 @@ def build_sequences(dataset: Dataset, data_dir_path: str, json_id: str) -> dict:
     else:
         raise NotImplementedError(f"No adapter registered for dataset: {dataset}")
 
+    stats = pipeline.get_filter_stats()
+    print(f"[{json_id}] match {stats['match_id']}: "
+          f"{stats['num_sequences']} sequences kept, "
+          f"{stats['frames_removed']} frames removed "
+          f"(~{stats['minutes_removed']} min)")
+
     match_id = pipeline.get_match_id()
     sequences = pipeline.build_sequences()
 
