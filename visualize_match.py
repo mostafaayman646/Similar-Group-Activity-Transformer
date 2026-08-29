@@ -4,13 +4,14 @@ visualize_match.py
 Simple 2D visualizer for football tracking sequences produced by the
 Football Data Pipeline (see README.md / Data_interface.py in this project).
 
-It reads the .pt file written by main.py (an [8-byte length][gzip(torch.save
-blob)] stream, one record per match) and animates the players + ball for the
-first `k` sequences of a chosen match on a 2D pitch.
+It reads the per-match files written by main.py (one gzip-compressed
+torch.save blob per match, named match_<id>.pt.gz, inside a "matches"
+folder) and animates the players + ball for the first `k` sequences of a
+chosen match on a 2D pitch.
 
 Usage
 -----
-    python visualize_match.py --pt_path "FIFA World Cup 2022/all_matches.pt" \
+    python visualize_match.py --pt_path "FIFA World Cup 2022/matches" \
                                --match_id 12345 \
                                --k 3
 
@@ -30,6 +31,8 @@ import struct
 from pathlib import Path
 
 import torch
+import matplotlib
+matplotlib.use('Agg') # Tell Matplotlib to run in headless mode
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import matplotlib.patches as patches
@@ -37,8 +40,8 @@ import matplotlib.patches as patches
 # ---------------------------------------------------------------------------
 # Defaults -- edit these if you'd rather not use the CLI
 # ---------------------------------------------------------------------------
-DEFAULT_PT_PATH = "FIFA World Cup 2022/all_matches.pt"
-DEFAULT_MATCH_ID = None      # None -> uses the first match found in the file
+DEFAULT_PT_PATH = "FIFA World Cup 2022/matches"
+DEFAULT_MATCH_ID = 10510      # None -> uses the first match found in the file
 DEFAULT_K = 3                # number of sequences to play
 DEFAULT_INTERVAL_MS = 60     # delay between frames (ms) -> lower = faster
 DEFAULT_SAVE_PATH = None     # e.g. "match.mp4" / "match.gif", or 'auto' for a generated filename
@@ -47,12 +50,15 @@ _HEADER = struct.Struct('<Q')  # matches main.py's on-disk record format
 
 
 # ---------------------------------------------------------------------------
-# Loading -- streams the file record-by-record and keeps ONLY the requested
-# match in memory. main.py's writer stores one match_id per record (each
-# _build_and_pack call returns a single {match_id: {...}} dict), so we can
-# discard every record that isn't the one we want and stop as soon as we've
-# found it. This avoids ever materializing the whole tournament in RAM,
-# which is what caused the previous version to run out of memory.
+# Loading -- main.py now writes one match_*.pt.gz file per match inside a
+# "matches" directory, so we only ever need to open the one file we want
+# (or, if no --match_id is given, the first file in the directory). This
+# avoids ever materializing the whole tournament in RAM, which is what
+# caused earlier versions to run out of memory.
+#
+# A legacy fallback is kept for the old single-file format (an
+# [8-byte length][gzip(torch.save blob)] stream) in case you still have an
+# all_matches.pt lying around from before.
 # ---------------------------------------------------------------------------
 def _ids_match(seen_id, requested_id) -> bool:
     if seen_id == requested_id:
@@ -61,18 +67,54 @@ def _ids_match(seen_id, requested_id) -> bool:
     return str(seen_id) == str(requested_id)
 
 
+def _load_match_file(file_path: Path) -> dict:
+    """Loads a single match_*.pt.gz file -> {match_id: match_data}."""
+    raw = gzip.decompress(file_path.read_bytes())
+    return torch.load(io.BytesIO(raw), weights_only=False)
+
+
 def find_match(path, match_id=None):
     """
-    Scans the .pt file one record at a time.
-    - If match_id is given, returns (matched_id, match_data) for the first
-      record containing it, then stops reading the rest of the file.
-    - If match_id is None, returns the first match found (also stops early).
-    - If not found, raises KeyError listing the match_ids that were seen
-      (ids only -- their frame data is never kept, so this stays cheap even
-      for a full scan).
-    Returns:
-        (matched_id, match_data)
+    Locates a single match and returns (matched_id, match_data).
+
+    `path` may be:
+      - a directory of match_*.pt.gz files (the current main.py output), or
+      - a single legacy .pt file containing the old
+        [8-byte length][gzip blob] stream format.
+
+    If match_id is given, returns the first match found with that id, then
+    stops reading further files/records. If match_id is None, returns the
+    first match found. If not found, raises KeyError listing the match_ids
+    that were seen (ids only -- their frame data is never kept, so this
+    stays cheap even for a full scan).
     """
+    path = Path(path)
+
+    if path.is_dir():
+        # Fast path: if we know the id, try the exact filename directly.
+        if match_id is not None:
+            direct = path / f"match_{match_id}.pt.gz"
+            if direct.exists():
+                chunk = _load_match_file(direct)
+                mid, mdata = next(iter(chunk.items()))
+                return mid, mdata
+
+        seen_ids = []
+        for file_path in sorted(path.glob('match_*.pt.gz')):
+            chunk = _load_match_file(file_path)
+            for mid, mdata in chunk.items():
+                if match_id is None:
+                    return mid, mdata
+                if _ids_match(mid, match_id):
+                    return mid, mdata
+                seen_ids.append(mid)
+
+        raise KeyError(
+            f"match_id {match_id!r} not found in {path}. "
+            f"Match ids seen: {seen_ids[:10]}{'...' if len(seen_ids) > 10 else ''}"
+        )
+
+    # Legacy single-file stream format.
     seen_ids = []
     with open(path, 'rb') as f:
         while True:
@@ -236,7 +278,9 @@ def animate_match(match_data: dict, match_id, k: int, interval: int, save_path: 
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Visualize player/ball movement for a match.")
-    parser.add_argument('--pt_path', type=str, default=DEFAULT_PT_PATH)
+    parser.add_argument('--pt_path', type=str, default=DEFAULT_PT_PATH,
+                         help='Directory of per-match match_*.pt.gz files written by main.py '
+                              '(or a legacy single all_matches.pt file).')
     parser.add_argument('--match_id', type=str, default=DEFAULT_MATCH_ID)
     parser.add_argument('--k', type=int, default=DEFAULT_K, help='Number of sequences to visualize')
     parser.add_argument('--interval', type=int, default=DEFAULT_INTERVAL_MS, help='ms between frames')
